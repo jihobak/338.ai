@@ -5,12 +5,13 @@ description = ""
 authors = ["Your Name <you@example.com>"]
 readme = "README.md"
 include = ["src/**/*"]
+packages = [{include = "bot338", from = "src"}]
 
 [tool.poetry.dependencies]
 python = "^3.11"
 fastapi = "^0.115.0"
 pydantic = "^2.9.2"
-weave = "^0.51.12"
+weave = "^0.51.19"
 openai = "^1.51.0"
 langchain = "^0.3.2"
 langchain-openai = "^0.2.2"
@@ -25,6 +26,7 @@ langchain-community = "^0.3.1"
 lancedb = "^0.13.0"
 langchain-cohere = "^0.3.0"
 sqlalchemy = "^2.0.35"
+pymongo = "^4.10.1"
 
 
 [tool.poetry.group.dev.dependencies]

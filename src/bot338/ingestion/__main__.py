@@ -5,58 +5,51 @@ from typing import List
 
 from bot338.ingestion.report import create_ingestion_report
 from dotenv import load_dotenv, find_dotenv
+from pydantic import Field
 import wandb
 
 from bot338.ingestion import prepare_data, preprocess_data, vectorstores
+from bot338.ingestion.config import BillStoreConfig, VectorStoreConfig
 from bot338.utils import get_logger
 
 
 logger = get_logger(__name__)
 
 
-def main2():
-    a = find_dotenv()
-    b = load_dotenv(a)
-
-    logger.info(f"{a=}")
-    logger.info(f"{b=}")
-
-
 def main():
-    _ = load_dotenv(find_dotenv())
-    project = os.environ.get("WANDB_PROJECT", "338lab")
-    entity = os.environ.get("WANDB_ENTITY", "trendfollowing")
-    logger.info(f"{project=}, {entity=}")
+    """
+    - poetry run python -m src.bot338.ingestion
+    """
+    env_file_path = find_dotenv()
+    load_env = load_dotenv(env_file_path)
 
-    current_path = pathlib.Path(__file__).resolve()  # ingestion
-    ingestion_folder = current_path.parent
-    src_folder = ingestion_folder.parent.parent
-    root_folder = src_folder.parent
-    raw_data_path = root_folder / "raw_data"
-    logger.info(f"{raw_data_path=}")
-    # raw_data_path=PosixPath('/Users/tesla/Documents/project/consulting/rag for reporters/repo/338.ai/raw_data')
+    project = os.environ.get("WANDB_PROJECT")
+    entity = os.environ.get("WANDB_ENTITY")
+    logger.info(f"[WANDB] {project=}, {entity=}")
 
-    result_artifact_name = "dojo_mode"
-    raw_artifact = prepare_data.load(
-        project, entity, raw_data_path, result_artifact_name
-    )
-    logger.info(f"{raw_artifact=}")
-    # raw_artifact='trendfollowing/338lab/dojo_mode:latest'
+    current_path = pathlib.Path(__file__).resolve()
+    ingestion_folder = current_path.parent  # ingestion
+    src_folder = ingestion_folder.parent.parent  # bot338
+    root_folder = src_folder.parent  # src
 
+    # bill_config = BillStoreConfig()
+    # logger.info(f"{bill_config.docstore_dir}")
+    result_artifact_name = "dev"
+    raw_artifact = prepare_data.load(project, entity, result_artifact_name)
+    # raw_artifact='trendfollowing/338lab/dev:latest'
+
+    # ---
     preprocessed_artifact = preprocess_data.load(
-        project, entity, raw_artifact, "transformed_data"
+        project, entity, raw_artifact, f"transformed_{result_artifact_name}"
     )
-    logger.info(f"{preprocessed_artifact=}")
-    # preprocessed_artifact='trendfollowing/338lab/transformed_data:latest'
+    # preprocessed_artifact='trendfollowing/338lab/transformed_dev:latest'
 
     vectorstore_artifact = vectorstores.load(
-        project, entity, preprocessed_artifact, "bot338_index"
+        project, entity, preprocessed_artifact, "bot338_dev_index"
     )
-    logger.info(f"{vectorstore_artifact=}")
-    # INFO : vectorstore_artifact='trendfollowing/338lab/bot338_index:latest'
+    # vectorstore_artifact='trendfollowing/338lab/bot338_index:latest'
 
-    create_ingestion_report(project, entity, raw_artifact, vectorstore_artifact)
-    logger.info(vectorstore_artifact)
+    # create_ingestion_report(project, entity, raw_artifact, vectorstore_artifact)
 
 
 if __name__ == "__main__":

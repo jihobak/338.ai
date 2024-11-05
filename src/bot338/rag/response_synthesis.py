@@ -1,5 +1,6 @@
+import asyncio
 from operator import itemgetter
-from typing import Any, Dict
+from typing import Any, Dict, AsyncGenerator
 
 import weave
 from langchain_core.output_parsers import StrOutputParser
@@ -8,7 +9,17 @@ from langchain_core.runnables import Runnable, RunnableLambda, RunnableParallel
 from langchain_core.messages import convert_to_messages, get_buffer_string
 from langchain_openai import ChatOpenAI
 
-from bot338.rag.utils import ChatModel, combine_documents, create_query_str
+from bot338.rag.utils import (
+    ChatModel,
+    combine_documents,
+    create_query_str,
+    acombine_documents,
+)
+from bot338.utils import get_logger
+
+
+logger = get_logger(__name__)
+
 
 RESPONSE_SYNTHESIS_SYSTEM_PROMPT = """\
 당신은 의안(법안) 전문가입니다. 당신의 목표는 의안들의 사용자들의 의안에 대한 이해를 도와주는 것입니다.
@@ -24,8 +35,8 @@ RESPONSE_SYNTHESIS_SYSTEM_PROMPT = """\
 - 의안의 내용은 <contents>, </contents> 태그안에 들어있다. 의안의 내용은 의안의 제안이유와 의안의 주요 내용이 들어있다.
 
 # 요구사항
-- 의안을 언급할 때는 반드시 출처를 남겨야 하고, 출처는 Markdown 링크 포맷으로 [title](bill_link)(의안 번호 bill_id)를 사용한다.
-    - 출처의 예) [자동차관리법 일부개정법률안](https://likms.assembly.go.kr/bill/billDetail.do?billId=PRC_M2N4L0K8K1I1J1F0F2D9C4D8B6C3K0)(의안번호 2200180)
+- 의안을 언급할 때는 반드시 출처를 남겨야 하고, 출처는 Markdown 링크 포맷으로 [title](bill_link)(의안 번호: bill_id)를 사용한다.
+    - 출처의 예) [자동차관리법 일부개정법률안](https://likms.assembly.go.kr/bill/billDetail.do?billId=PRC_M2N4L0K8K1I1J1F0F2D9C4D8B6C3K0)(의안번호: 2200180)
 """
 
 USER_PROMPT = """\
@@ -33,6 +44,7 @@ USER_PROMPT = """\
 # 의안 검색결과
 {context_str}
 
+---
 
 {query_str}
 """
@@ -45,20 +57,19 @@ RESPONSE_SYNTHESIS_PROMPT_MESSAGES = [
 
 # 이 프롬프트는 'query_str` 을 만들기 위해서 사용되는 프롬프트이다.
 DEFAULT_QUESTION_PROMPT = PromptTemplate.from_template(
-    template="""\
-# 질문
+    template="""[# 질문 및 사용자의 요구사항]
 
 {page_content}
 
 ---
 
-# 질문 메타데이터
+[# 질문 메타데이터]
 
 Intents: 
 
 {intents}
 
-고려해야 할 하위 질문들: 
+[사용자에게 응답하기 위해서 답변하기 전 고려해야 할 하위 질문들:] 
 
 {sub_queries}
 """
@@ -91,11 +102,14 @@ class ResponseSynthesizer:
             self._chain = base_chain.with_fallbacks([fallback_chain])
         return self._chain
 
-    @staticmethod
-    def prompt_route(inputs: Dict[str, Any]) -> ChatPromptTemplate:
+    @weave.op()
+    def prompt_route(self, inputs: Dict[str, Any]) -> ChatPromptTemplate:
         # retrieval 단계에서 검색을 했냐 안했냐. 안 했다면, docs_context 와 context 가 빈 리스트([]) 이다.
+        logger.info(f"!!!![ResponseSynthesizer] {inputs=}")
         need_search = inputs["need_search"]
         need_write_article = inputs["need_write_article"]
+
+        logger.info(f"!!!![ResponseSynthesizer] {need_search=}, {need_write_article=}")
 
         if need_search and not need_write_article:
             # only search
@@ -110,7 +124,7 @@ class ResponseSynthesizer:
 - 명확한 전달력: 전문 용어를 사용하는 동시에, 독자들이 이해할 수 있도록 쉽게 설명하는 능력을 갖춘 기자입니다.
 - 객관성과 중립성: 기사를 작성할 때, 객관적인 시각을 유지하고, 감정적인 표현을 피하며 사실을 기반으로 **중립적이며 객관적인 어조**로 작성합니다.
 
-## 의안 문서 포맷
+[## 의안 문서 포맷]
 - 의안 문서는 `<doc>`, `</doc>` 태그로 감싸져 있습니다.
 - 의안의 제목은 `<title>` 태그로 표시됩니다.
 - 의안의 원문 링크는 `<bill_link>` 태그로 제공됩니다.
@@ -118,36 +132,114 @@ class ResponseSynthesizer:
 - 공동 발의자는 `<coauthors>`, 대표 발의자는 `<chief_authors>` 태그에 포함됩니다.
 - 의안의 주요 내용은 `<contents>`, `</contents>` 태그 사이에 포함되며, 여기에는 제안 이유와 주요 내용이 포함됩니다.
 
+[## 기사 작성 가이드라인]
+
+ 가이드 내용에서 본문 구성요소의 경우, 모두 다 다룰 필요는 없다. 기사에서 다루는 의안에 따라서 적절히 선택해서 활용한다. 
+
+1. 기사 구조
+
+   - 분량: 최소 1500자 이상
+     - 기사에서 다루는 의안의 갯수 및 의안 내용의 난이도와 길이는 비례해야 한다.
+
+   - 형식: 제목 → 리드문(핵심 요약) → 본문 → 마무리
+
+   - 단락 구분: 독자의 이해를 돕고 논리적인 흐름을 유지하기위해 논리적인 단락 구분을 유지합니다.
+
+2. 제목 작성
+   A. 제목(헤드라인)
+    - 형식: 마크다운 '#' 사용
+
+    - 원칙:
+
+        - 의안의 핵심 내용을 함축적으로 전달
+
+        - 명사형이나 핵심 어구로 종결
+
+        - 독자의 관심을 유도하는 표현 사용
+
+        - 과장되거나 선정적인 표현 지양
+
+   B. 소제목
+     - 형식: 마트다운 '###' 사용
+
+     - 원칙:
+
+        - 소제목은 반드시 사용할 필요는 없다. 내용 전환점이나 꼭 필요한 경우에만 독자의 이해를 돕기 위해 필요할 때만 적절하게 사용
+
+        - 명사형이나 핵심 어구로 종결
+
+        - 독자의 관심을 유도하는 표현 사용
+
+        - 과장되거나 선정적인 표현 지양
+
+
+
+3. 본문 구성
+
+   A. 리드문 (첫 단락)
+
+      - 5W1H 원칙에 따라 핵심 내용 요약
+
+      - 의안의 발의 배경과 사회적 맥락 제시
+
+   
+
+   B. 본문 구성요소
+
+      - 의안 발의 배경 및 의안의 주요내용: 의안의 제안 이유와 의안에서 다루고 있는 핵심 내용을 소개하고 설명 합니다.
+
+      - 쟁점사항: 주요 쟁점사항을 분석하여 다양한 시각을 반영합니다.
+
+      - 전문가 의견: 가능할 경우, 전문가 의견이나 이해관계자의 입장을 인용하여 기사의 깊이를 더합니다.
+
+   
+
+   C. 비교분석 (여러 의안이 있는 경우)
+
+      - 의안들의 차이점을 표나 글로 명확하게 제시
+
+        - 표를 사용해서 의안의 차이점을 효과적으로 나타낼 수 있을 때, 표를 사용
+
+      - 각 의안의 장단점 분석
+
+      
+
+4. 문체와 표현
+
+      - 기사체 사용: “-ㄴ다”, “-다” 형식으로 종결하는 기사 문체 사용
+
+      - 객관적 톤 유지: 감정적 표현을 배제하고 객관성을 유지
+
+      - 전문용어 설명: 필요한 경우, 전문용어는 풀어서 설명하여 독자의 이해를 돕습니다.
+
+      - 수식어 최소화: 불필요한 수식어는 자제하고 간결한 표현을 사용합니다.
+
+5. 형식적 요소
+
+   - **의원 언급**: 의원을 언급할 때는 `이름(정당)` 형식으로 작성합니다.
+     - 예) 한동훈(국민의힘)
+
+   - **의안 목록**: 기사 맨 아래에는 사용된 의안들을 bullet point로 나열합니다.
+
+   - 인용 시 출처 명시
+     - **의안 출처 표시**: 의안을 언급할 때는 반드시 출처를 남깁니다. 출처는 **Markdown 링크 포맷**으로 `[title](bill_link)(의안 번호: bill_id)` 형태로 작성합니다.
+       - 예) [자동차관리법 일부개정법률안](https://likms.assembly.go.kr/bill/billDetail.do?billId=PRC_M2N4L0K8K1I1J1F0F2D9C4D8B6C3K0)(의안번호: 2200180)
+       - 단, 기사에서 해당 의안이 처음으로 언급되는 경우는, 기본 포맷에 정당을 추가해서 표시합니다. `[title](bill_link)(party, 의안 번호: bill_id)` 형태로 작성합니다.
+
 """
             WRITE_ARTICLE_TASK_PROMPT = """\
 
-# 의안 검색결과
+
+[# 의안 검색결과]
 {context_str}
 
+---
 
 {query_str}
 
+---
 
-## 요구사항 
-1. 제시된 **의안** 정보만을 사용하며, **사전 지식**은 사용하지 않습니다.
-
-2. **출처 표시**: 의안을 언급할 때는 반드시 출처를 남깁니다. 출처는 **Markdown 링크 포맷**으로 `[title](bill_link)(의안 번호: bill_id)` 형태로 작성합니다.
-    - 예시: [자동차관리법 일부개정법률안](https://likms.assembly.go.kr/bill/billDetail.do?billId=PRC_M2N4L0K8K1I1J1F0F2D9C4D8B6C3K0)(의안번호 2200180)
-  
-3. **문제점과 목적**: 의안이 해결하고자 하는 문제점과 이루고자 하는 목적이 잘 드러나야 합니다.
-  
-4. **소제목 사용**: 소제목이 필요한 문단에서는 해당 문단의 핵심 내용을 간결하게 요약하고, 독자가 흥미를 가질 수 있는 소제목을 사용합니다.
-
-5. **비교 분석**: 동일한 문제를 다루는 의안들이 있다면, 각 의안의 차이점을 비교 분석합니다. 단순히 나열하는 것이 아니라 **차이점의 핵심**을 설명하고, 이를 명확하게 보여줄 수 있는 소제목을 사용합니다.
-
-6. **기본 형식**: 기사는 **1000자 이상** 작성하며, 형식은 일반적인 기사 형식을 따릅니다. 
-
-7. **의원 언급**: 의원을 언급할 때는 `이름(정당)` 형식으로 작성합니다. 
-    - 예시: 한동훈(국민의힘)
-  
-8. **의안 목록**: 기사 맨 아래에는 사용된 의안들을 bullet point로 나열합니다.
-
-위의 의안 검색결과와 사용자의 쿼리를 참조해서, 요구사항을 지키면서 기사를 작성하시오
+위의 의안 검색결과와 사용자의 쿼리를 참조해서, 기사 가이드라인을 지키면서 기사를 작성하시오
 """
             return ChatPromptTemplate.from_messages(
                 [
@@ -157,7 +249,7 @@ class ResponseSynthesizer:
             )
         else:
             TASK_PROMPT = """\
-# 사용자와 대화 내역
+[# 사용자와 대화 내역]
 {chat_history}
 
 
@@ -263,7 +355,47 @@ class ResponseSynthesizer_OG:
         return self.chain.invoke(inputs)
 
 
-# RESPONSE_SYNTHESIS_SYSTEM_PROMPT = """당신은 Wandbot입니다 - Weights & Biases, wandb 및 weave의 지원 전문가입니다.
+class StreamResponseSynthesizer(ResponseSynthesizer):
+    @weave.op()
+    async def __call__(self, inputs: Dict[str, Any]) -> AsyncGenerator[str, None]:
+        # async for token in self.chain.astream(inputs):
+        #     yield token
+        return self.chain.astream(inputs)
+
+    def _load_chain(self, model: ChatOpenAI) -> Runnable:
+        response_synthesis_chain = (
+            RunnableLambda(
+                lambda x: {
+                    "query_str": create_query_str(x, DEFAULT_QUESTION_PROMPT),
+                    # "context_str": combine_documents(x["context"]),
+                    "context_str": asyncio.run(acombine_documents(x["context"])),
+                    "chat_history": get_buffer_string(
+                        x["chat_history"], "user", "assistant"
+                    ),
+                    "need_search": x["need_search"],
+                    "need_write_article": x["need_write_article"],
+                }
+            )
+            | RunnableParallel(
+                query_str=itemgetter("query_str"),
+                context_str=itemgetter("context_str"),
+                response_prompt=RunnableLambda(self.prompt_route),
+            )
+            | RunnableParallel(
+                query_str=itemgetter("query_str"),
+                context_str=itemgetter("context_str"),
+                response_prompt=RunnableLambda(
+                    lambda x: x["response_prompt"].to_string()
+                ),
+                response=itemgetter("response_prompt") | model | StrOutputParser(),
+                response_model=RunnableLambda(lambda x: model.model_name),
+            )
+        )
+
+        return response_synthesis_chain
+
+
+# RESPONSE_SYNTHESIS_SYSTEM_PROMPT = """당신은 bot338입니다 - Weights & Biases, wandb 및 weave의 지원 전문가입니다.
 # 당신의 목표는 Weights & Biases, `wandb`, 그리고 시각화 라이브러리 `weave`와 관련된 질문에 대해 사용자들을 도와주는 것입니다.
 # 신뢰할 수 있는 전문가로서, 제공된 문서 조각들만을 사용하여 질문에 대한 진실한 답변을 제공해야 하며, 사전 지식은 사용하지 말아야 합니다.
 # 사용자 질문에 응답할 때 따라야 할 지침은 다음과 같습니다:

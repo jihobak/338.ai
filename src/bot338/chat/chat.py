@@ -1,11 +1,12 @@
-from typing import List
+import json
+from typing import Any, List, AsyncGenerator
 
 import weave
 
 import wandb
 from bot338.chat.config import ChatConfig
-from bot338.chat.rag import RAGPipeline, RAGPipelineOutput
-from bot338.chat.schemas import ChatRequest, ChatResponse
+from bot338.chat.rag import RAGPipeline, RAGPipelineOutput, StreamRAGPipeline
+from bot338.chat.schemas import ChatRequest, ChatResponse, OpenWebUiChatRequest
 from bot338.database.schemas import QuestionAnswer
 from bot338.retriever import VectorStore
 from bot338.utils import Timer, get_logger
@@ -110,3 +111,94 @@ class Chat:
             )
 
             return ChatResponse(**result)
+
+
+class StreamChat(Chat):
+    """Class for handling chat interactions.
+
+    Attributes:
+        config: An instance of ChatConfig containing configuration settings.
+        run: An instance of wandb.Run for logging experiment information.
+
+    TODO
+        - vectorstore 안에서 vector_db 로 바뀐점.
+        - as_retriever 시, 넘겨주는 인자에 docstore 및, id_key 주의.
+    """
+
+    def __init__(self, vector_store: VectorStore, config: ChatConfig):
+        """Initializes the Chat instance.
+
+        Args:
+            config: An instance of ChatConfig containing configuration settings.
+        """
+        self.vector_store = vector_store
+        self.config = config
+        self.run = wandb.init(
+            project=self.config.wandb_project,
+            entity=self.config.wandb_entity,
+            job_type="chat",
+        )
+        self.run._label(repo="bot338")
+
+        self.rag_pipeline = StreamRAGPipeline(
+            vector_store=vector_store,
+            top_k=self.config.top_k,
+            search_type=self.config.search_type,
+            fetch_k=self.config.fetch_k,
+            lambda_mult=self.config.lambda_mult,
+            multilingual_reranker_model=self.config.multilingual_reranker_model,
+            response_synthesizer_model=self.config.response_synthesizer_model,
+            response_synthesizer_temperature=self.config.response_synthesizer_temperature,
+            response_synthesizer_fallback_model=self.config.response_synthesizer_fallback_model,
+            response_synthesizer_fallback_temperature=self.config.response_synthesizer_fallback_temperature,
+        )
+
+    async def _get_answer(
+        self, question: str, chat_history: List[QuestionAnswer], reranking: bool = False
+    ) -> AsyncGenerator[dict, None]:
+        history = []
+        for item in chat_history:
+            history.append(("user", item.question))
+            history.append(("assistant", item.answer))
+
+        return await self.rag_pipeline(question, history, reranking)
+
+    async def _completion(
+        self, query: str, chat_history: List[dict[str, Any]], reranking: bool = False
+    ) -> AsyncGenerator[dict, None]:
+        history = []
+        for message in chat_history:
+            role = message["role"]
+            content = message["content"]
+
+            if role in ["user", "assistant"]:
+                history.append((role, content))
+        return await self.rag_pipeline(query, history, reranking)
+
+    @weave.op()
+    async def __call__(
+        self, chat_request: OpenWebUiChatRequest
+    ) -> AsyncGenerator[dict, None]:
+        """Handles the chat request and returns the chat response.
+
+        Args:
+            chat_request: An instance of ChatRequest representing the chat request.
+
+        Returns:
+            An instance of `ChatResponse` representing the chat response.
+        """
+
+        chain: AsyncGenerator[dict, None] = await self._completion(
+            chat_request.query,
+            chat_request.chat_history or [],
+            chat_request.reranking,
+        )
+
+        async for chunk in chain:
+            if isinstance(chunk, dict):
+                if "response" in chunk:
+                    yield chunk["response"]
+                else:
+                    yield ""
+            else:
+                yield ""

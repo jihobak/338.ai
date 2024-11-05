@@ -246,7 +246,7 @@ class EnhancedQuery(BaseModel):
             search_metadata: dict = self.search_metadata.model_dump()
             # parties 필드를 value 값으로 변환
             search_metadata["parties"] = [
-                party.name.value for party in search_metadata["parties"]
+                party["name"].value for party in search_metadata["parties"]
             ]
 
         return {
@@ -358,3 +358,7 @@ class QueryEnhancer:
     @weave.op()
     def __call__(self, inputs: Dict[str, Any] = None) -> Dict[str, Any]:
         return self.chain.invoke(inputs)
+
+    @weave.op()
+    async def ainvoke(self, inputs: Dict[str, Any] = None) -> Dict[str, Any]:
+        return self.chain.ainvoke(inputs)

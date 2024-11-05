@@ -1,9 +1,10 @@
 import json
 from datetime import datetime
-from typing import List, Optional
+from typing import AsyncGenerator, List, Optional
 from urllib.parse import urljoin
 
 import aiohttp
+from fastapi.responses import StreamingResponse
 import requests
 
 from bot338.api.routers.chat import APIQueryRequest, APIQueryResponse
@@ -20,6 +21,10 @@ from bot338.api.routers.retrieve import (
     APIRetrievalResponse,
 )
 from bot338.database.schemas import QuestionAnswer
+from bot338.utils import get_logger
+
+
+logger = get_logger(__name__)
 
 
 class APIClient:
@@ -307,6 +312,7 @@ class AsyncAPIClient(APIClient):
             url: The URL of the API to interact with.
         """
         super().__init__(url)
+        self.completion_endpoint = urljoin(str(self.url), "chat/completion")
 
     async def _get_chat_thread(
         self, request: APIGetChatThreadRequest
@@ -516,6 +522,36 @@ class AsyncAPIClient(APIClient):
         response = await self._query(request)
 
         return response
+
+    async def _stream_query(self, request: APIQueryRequest) -> AsyncGenerator | None:
+        """"""
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                self.completion_endpoint,
+                json=json.loads(request.model_dump_json()),
+                timeout=120,
+            ) as response:
+                if response.status == 200:
+                    logger.info(f"{type(response)=}")
+                    logger.info(f"{type(response.content)=}")
+
+                    async for chunk in response.content.iter_any():
+                        yield chunk
+                else:
+                    yield None
+
+    async def stream_query(
+        self,
+        question: str,
+        chat_history: List[QuestionAnswer] = None,
+        application: str | None = None,
+    ) -> AsyncGenerator | None:
+        """"""
+        request = APIQueryRequest(
+            question=question, chat_history=chat_history, application=application
+        )
+        async for chunk in self._stream_query(request):
+            yield chunk
 
     async def _retrieve(
         self, request: APIRetrievalRequest

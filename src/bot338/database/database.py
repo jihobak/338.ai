@@ -6,7 +6,7 @@ connection arguments, and creates a sessionmaker bound to this engine.
 
 Typical usage example:
 
-  from wandbot.database.database import SessionLocal
+  from bot338.database.database import SessionLocal
   session = SessionLocal()
 """
 

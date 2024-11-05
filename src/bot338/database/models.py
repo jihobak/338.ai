@@ -4,7 +4,7 @@ Each class represents a table in the database and includes columns and relations
 base that stores a catalof of classes and mapped tables in the Declarative system.
 
 Typical usage example:
-    from wandbot.database.models import ChatThread, QuestionAnswer, FeedBack
+    from bot338.database.models import ChatThread, QuestionAnswer, FeedBack
     chat_thread = ChatThread(thread_id='123', application='app1')
     question_answer = QuestionAnswer(question_answer_id='456', thread_id='123')
     feedback = FeedBack(feedback_id='789', question_answer_id='456')

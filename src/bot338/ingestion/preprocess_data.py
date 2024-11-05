@@ -1,51 +1,68 @@
 import json
+import os
 import pathlib
 from typing import Any, Generator, List, Sequence
 
-import tiktoken
 from langchain_core.documents import BaseDocumentTransformer, Document
+from langchain_community.storage import MongoDBStore
+from langchain.retrievers import ParentDocumentRetriever
+
 import wandb
 
-from bot338.utils import get_logger
-from bot338.ingestion.preprocessors.bills import BillsTransformer
+from bot338.ingestion.config import VectorStoreConfig
+from bot338.utils import get_logger, make_document_tokenization_safe
+from bot338.ingestion.preprocessors.bills import (
+    BillTransformer,
+    BillTransformerForParentRetriever,
+)
 
 logger = get_logger(__name__)
 
 
-class Tokenizer:
-    def __init__(self, model_name):
-        self.tokenizer = tiktoken.encoding_for_model(model_name)
+# class Tokenizer:
+#     def __init__(self, model_name):
+#         self.tokenizer = tiktoken.encoding_for_model(model_name)
 
-    def encode(self, text: str):
-        return self.tokenizer.encode(text, allowed_special="all")
+#     def encode(self, text: str):
+#         return self.tokenizer.encode(text, allowed_special="all")
 
-    def decode(self, tokens):
-        return self.tokenizer.decode(tokens)
-
-
-tokenizer = Tokenizer("gpt-4o-2024-08-06")
+#     def decode(self, tokens):
+#         return self.tokenizer.decode(tokens)
 
 
-def length_function(content: str) -> int:
-    return len(tokenizer.encode(content))
+# tokenizer = Tokenizer("gpt-4o-2024-08-06")
 
 
-def len_function_with_doc(document: Document) -> int:
-    return len(tokenizer.encode(document.page_content))
+# def length_function(content: str) -> int:
+#     return len(tokenizer.encode(content))
+
+
+# def len_function_with_doc(document: Document) -> int:
+#     return len(tokenizer.encode(document.page_content))
 
 
 class DocumentTransformer(BaseDocumentTransformer):
+    """여러 타입의 문서를 최종 전처리하는 클래스"""
+
     def __init__(
         self,
         max_size: int = 5000,
+        overlap_size: int = 0,
         model_name: str = "gpt-4o-2024-08-06",
-        length_function=None,
+        parent_id_key: str = "parent_id",
     ) -> None:
         self.chunk_size = max_size
-        self.length_function = length_function
-        self.bill_transformer = BillsTransformer(
-            chunk_size=self.chunk_size, model_name=model_name
+        self.overlap_size = overlap_size
+        self.model_name = model_name
+        self.parent_id_key = parent_id_key
+
+        self.bill_transformer = BillTransformerForParentRetriever(
+            chunk_size=self.chunk_size,
+            model_name=model_name,
+            chunk_overlap=overlap_size,
+            parent_id_key=parent_id_key,
         )
+        self.full_docs = []
 
     def fix_metadata_values(
         self, documents: Sequence[Document], **kwargs: Any
@@ -71,7 +88,33 @@ class DocumentTransformer(BaseDocumentTransformer):
             A sequence of transformed Documents.
         """
         # after_fix_metadatas = list(self.fix_metadata_values(documents))
-        return self.bill_transformer.transform_documents(documents)
+        transformed_documents = []
+        for document in list(documents):
+            """
+            TODO
+                - embedding model, llm model 여부에 따른 `make_document_tokenization_safe` 사용고민
+            """
+            document = make_document_tokenization_safe(
+                document, model_name=self.model_name
+            )
+            if document.metadata.get("source_type", "") == "bill":
+                if type(self.bill_transformer) == BillTransformerForParentRetriever:
+                    docs, full_docs = self.bill_transformer.transform_documents(
+                        [document]
+                    )
+                    # if len(docs) > 1:
+                    #     _, full_doc = full_docs[0]
+                    #     print(
+                    #         f"{len(docs)=}, {len(full_docs)}, {full_doc.metadata['bill_no']=}"
+                    #     )
+                    transformed_documents.extend(docs)
+                    self.full_docs.extend(full_docs)
+                else:
+                    transformed_documents.extend(
+                        self.bill_transformer.transform_documents([document])
+                    )
+
+        return transformed_documents
 
 
 def process_documents_file(
@@ -99,16 +142,29 @@ def load(
     )
 
     # settings for document transformer
-    max_size: int = 5000
-    model_name: str = "gpt-4o-2024-08-06"
-    doc_transformer = DocumentTransformer(max_size=max_size, model_name=model_name)
+    max_size: int = int(os.getenv("PREPROCESS_CHUNK_SIZE"))
+    overlap_size: int = int(os.getenv("PREPROCESS_CHUNK_OVERLAP_SIZE"))
+    tokenizer_model_name: str = os.getenv("PREPROCESS_TOKENIZER_MODEL")
+
+    # doc store for origianl documents
+    vector_config = VectorStoreConfig()
+
+    doc_transformer = DocumentTransformer(
+        max_size=max_size,
+        overlap_size=overlap_size,
+        model_name=tokenizer_model_name,
+        parent_id_key=vector_config.id_key,
+    )
+
+    docstore = MongoDBStore(
+        vector_config.docstore_uri,
+        db_name=vector_config.docstore_db_name,
+        collection_name=vector_config.docstore_collection_name,
+    )
 
     result_artifact = wandb.Artifact(result_artifact_name, type="dataset")
 
     for document_file in documents_files:
-        # print(f"{document_file.parent.name=}")  # bills
-        # print(f"{document_file.name=}")  # documents.jsonl
-        # document_file=PosixPath('/Users/tesla/Documents/project/consulting/rag for reporters/repo/338.ai/artifacts/dojo_mode:v0/bills/documents.jsonl')
 
         with document_file.open("r") as f:
             documents = [Document(**json.loads(line)) for line in f]
@@ -117,22 +173,34 @@ def load(
             config = json.load((document_file.parent / "config.json").open())
             metadata = json.load((document_file.parent / "metadata.json").open())
             cache_dir = (
-                pathlib.Path(config["data_source"]["cache_dir"]).parent
-                / "transformed_data"
+                pathlib.Path(config["data_source"]["cache_dir"]) / result_artifact_name
             )
 
             transformed_file = (
                 cache_dir / document_file.parent.name / document_file.name
             )
-            logger.info(f"{transformed_file=}")
-            # transformed_file=PosixPath('data/cache/transformed_data/bills/documents.jsonl')
+            # transformed_file=PosixPath('data/cache/transformed_dev/bill/documents.jsonl')
 
             transformed_file.parent.mkdir(parents=True, exist_ok=True)
             with transformed_file.open("w") as of:
                 for document in transformed_documents:
                     of.write(json.dumps(document.model_dump()) + "\n")
 
+            # full doc 이 존재 할 경우
+            if doc_transformer.full_docs:
+                # save to docstore
+                docstore.mset(doc_transformer.full_docs)
+
+                full_docs_file = (
+                    cache_dir / document_file.parent.name / "full_documents.jsonl"
+                )
+                with full_docs_file.open("w") as of:
+                    for _, doc in doc_transformer.full_docs:
+                        of.write(json.dumps(doc.model_dump()) + "\n")
+
             config["chunk_size"] = max_size
+            config["overlap_size"] = overlap_size
+            config["tokenizer_model_name"] = tokenizer_model_name
             with open(transformed_file.parent / "config.json", "w") as of:
                 json.dump(config, of)
 
@@ -143,10 +211,6 @@ def load(
             result_artifact.add_dir(
                 str(transformed_file.parent), name=document_file.parent.name
             )
-            logger.info(f"{str(transformed_file.parent)=}")
-            # str(transformed_file.parent)='data/cache/transformed_data/bills'
-            logger.info(f"{document_file.parent.name=}")
-            # document_file.parent.name='bills'
 
     run.log_artifact(result_artifact)
     run.finish()
@@ -155,7 +219,7 @@ def load(
 
 if __name__ == "__main__":
     from langchain_text_splitters import CharacterTextSplitter
-    from bot338.ingestion.preprocessors.bills import BillsTransformer
+    from bot338.ingestion.preprocessors.bills import BillTransformer
 
     file_path = "/Users/tesla/Documents/project/consulting/rag for reporters/repo/338.ai/artifacts/dojo_mode:v0/bills/documents.jsonl"
     # fastapi pydantic weave openai langchain langchain-openai langchain-chroma wandb pydantic-settings
@@ -167,7 +231,7 @@ if __name__ == "__main__":
         sample_content = sample_doc.page_content
         print(f"{sample_content}")
         print(">>>>>>>>>>>>>>>>>>>>>>>>>>")
-        btransformer = BillsTransformer(chunk_size=50)
+        btransformer = BillTransformer(chunk_size=50)
 
         for chunk in btransformer.transform_documents([sample_doc]):
             print(chunk.page_content)

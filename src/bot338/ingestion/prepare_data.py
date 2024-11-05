@@ -184,7 +184,6 @@ def load(
       - docstore_dir = data_source.cache_dir + config.name + docstore_dir
     """
     bills_store_config = BillStoreConfig()
-    logger.info(f"{bills_store_config.model_dump()}")
 
     configs = [bills_store_config]
 
@@ -199,8 +198,6 @@ def load(
     results = pool.imap_unordered(load_from_config, configs)
 
     for docstore_path in results:
-        logger.info(f"[>>>>]{docstore_path=}")
-        logger.info(f"[>>>>]{docstore_path.name=}")
         artifact.add_dir(
             str(docstore_path),
             name=docstore_path.name,  # name 때문에 캬쉬 디렉토리에 docstre_path/name 이 생긴다.

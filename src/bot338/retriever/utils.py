@@ -1,7 +1,7 @@
 from langchain_openai import OpenAIEmbeddings
 
 
-class OpenAIEmbeddingsModel:
+class EmbeddingsModel:
     def __init__(self):
         pass
 

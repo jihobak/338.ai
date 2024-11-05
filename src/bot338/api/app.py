@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 
 import dotenv
 from dotenv import find_dotenv
+from fastapi.responses import StreamingResponse
 import pandas as pd
 import weave
 from fastapi import BackgroundTasks, FastAPI
@@ -17,7 +18,7 @@ from bot338.chat.chat import ChatConfig
 from bot338.database.database import engine
 from bot338.database.models import Base
 from bot338.ingestion.config import VectorStoreConfig
-from bot338.retriever import VectorStore
+from bot338.retriever import RAGVectorStore
 from bot338.utils import get_logger
 
 logger = get_logger(__name__)
@@ -45,9 +46,9 @@ async def initialize():
     logger.info(f"Initializing bot338")
     global is_initialized
     if not is_initialized:
-        vector_store = VectorStore.from_config(VectorStoreConfig())
+        vector_store = RAGVectorStore.from_config(VectorStoreConfig())
         chat_config = ChatConfig()
-        chat_router.chat = chat_router.Chat(
+        chat_router.chat = chat_router.StreamChat(
             vector_store=vector_store, config=chat_config
         )
         logger.info(f"Initialized chat router")
@@ -79,7 +80,7 @@ async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
 
     if os.getenv("BOT338_EVALUATION", False):
-        logger.info("Lifespan starting, initializing wandbot for evaluation mode.")
+        logger.info("Lifespan starting, initializing bot338 for evaluation mode.")
         await initialize()
 
     async def backup_db():
@@ -123,9 +124,21 @@ async def root(background_tasks: BackgroundTasks):
     return {"message": "Initialization started in the background"}
 
 
+@app.exception_handler(chat_router.ChatStreamError)
+async def chat_stream_error_handler(request, exc: chat_router.ChatStreamError):
+    """ChatStreamError 발생 시 적절한 응답을 생성하는 핸들러"""
+    error_stream = [
+        f"{exc.message}\n",
+    ]
+    return StreamingResponse(
+        error_stream, media_type="text/event-stream", status_code=exc.status_code
+    )
+
+
 app.include_router(chat_router.router)
 app.include_router(database_router.router)
 app.include_router(retrieve_router.router)
+
 
 if __name__ == "__main__":
     import uvicorn

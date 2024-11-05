@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import List
+from typing import Any, List
 
 from pydantic import BaseModel
 
@@ -26,6 +26,13 @@ class ChatThread(ChatThreadCreate):
 class ChatRequest(BaseModel):
     question: str
     chat_history: List[QuestionAnswer] | None = None
+    application: str | None = None
+    reranking: bool = False
+
+
+class OpenWebUiChatRequest(BaseModel):
+    query: str
+    chat_history: List[dict[str, Any]]
     application: str | None = None
     reranking: bool = False
 

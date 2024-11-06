@@ -83,31 +83,6 @@ async def lifespan(app: FastAPI):
         logger.info("Lifespan starting, initializing bot338 for evaluation mode.")
         await initialize()
 
-    async def backup_db():
-        """Periodically backs up the database to a table.
-
-        This function runs periodically and retrieves all question-answer threads from the database since the last backup.
-        It then creates a pandas DataFrame from the retrieved threads and logs it to a table using Weights & Biases.
-        The last backup timestamp is updated after each backup.
-
-        Returns:
-            None
-        """
-        global last_backup
-        while True:
-            chat_threads = database_router.db_client.get_all_question_answers(
-                last_backup
-            )
-            if chat_threads is not None:
-                chat_table = pd.DataFrame([chat_thread for chat_thread in chat_threads])
-                last_backup = datetime.now().astimezone(timezone.utc)
-                logger.info(
-                    f"Backing up database to Table at {last_backup}: Number of chat threads: {len(chat_table)}"
-                )
-                wandb.log({"question_answers_db": wandb.Table(dataframe=chat_table)})
-            await asyncio.sleep(600)
-
-    _ = asyncio.create_task(backup_db())
     yield
     if wandb.run is not None:
         wandb.run.finish()

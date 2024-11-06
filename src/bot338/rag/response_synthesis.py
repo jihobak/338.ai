@@ -105,11 +105,8 @@ class ResponseSynthesizer:
     @weave.op()
     def prompt_route(self, inputs: Dict[str, Any]) -> ChatPromptTemplate:
         # retrieval 단계에서 검색을 했냐 안했냐. 안 했다면, docs_context 와 context 가 빈 리스트([]) 이다.
-        logger.info(f"!!!![ResponseSynthesizer] {inputs=}")
         need_search = inputs["need_search"]
         need_write_article = inputs["need_write_article"]
-
-        logger.info(f"!!!![ResponseSynthesizer] {need_search=}, {need_write_article=}")
 
         if need_search and not need_write_article:
             # only search

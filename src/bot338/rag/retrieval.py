@@ -318,9 +318,13 @@ class FusionRetrieval:
                 #     )
                 # )
         else:
+
+            async def empty_list(*args, **kwargs):
+                return []
+
             chain = RunnablePassthrough().assign(
-                docs_context=lambda x: []
-            ) | RunnablePassthrough().assign(context=lambda x: [])
+                docs_context=empty_list
+            ) | RunnablePassthrough().assign(context=empty_list)
 
         return chain
 

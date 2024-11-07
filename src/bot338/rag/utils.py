@@ -1,3 +1,4 @@
+import asyncio
 import json
 from typing import List, Optional
 
@@ -195,7 +196,9 @@ async def acombine_documents(
     # document_prompt=DEFAULT_DOCUMENT_PROMPT,
     document_separator="\n\n---\n\n",
 ):
-    docs = await docs
+    if asyncio.iscoroutine(docs):
+        docs = await docs
+
     cleaned_docs = [clean_document_content(doc) for doc in docs]
     doc_strings = [build_prompt_for_bill(doc) for doc in cleaned_docs]
     return document_separator.join(doc_strings)

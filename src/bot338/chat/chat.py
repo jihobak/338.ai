@@ -175,7 +175,6 @@ class StreamChat(Chat):
                 history.append((role, content))
         return await self.rag_pipeline(query, history, reranking)
 
-    @weave.op()
     async def __call__(
         self, chat_request: OpenWebUiChatRequest
     ) -> AsyncGenerator[dict, None]:

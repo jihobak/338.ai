@@ -1,4 +1,4 @@
-from .base import VectorStore
-from .utils import OpenAIEmbeddingsModel
+from .base import VectorStore, RAGVectorStore
+from .utils import EmbeddingsModel
 
-__all__ = ["VectorStore", "OpenAIEmbeddingsModel"]
+__all__ = ["VectorStore", "EmbeddingsModel", "RAGVectorStore"]

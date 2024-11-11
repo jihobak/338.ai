@@ -1,13 +1,21 @@
 from operator import itemgetter
-from typing import Any, List, Optional, TYPE_CHECKING
+import uuid
+from typing import Any, Dict, List, Optional, TYPE_CHECKING, Sequence, Tuple
 import warnings
 
+from langchain_community.storage import MongoDBStore
 from langchain_community.vectorstores import LanceDB
 from langchain_community.vectorstores.lancedb import to_lance_filter
 from langchain_community.document_transformers import EmbeddingsRedundantFilter
+from langchain_core.stores import BaseStore
 from langchain_core.documents import Document
 from langchain_core.runnables import RunnableLambda, RunnableParallel
-from langchain_core.vectorstores import VectorStoreRetriever
+from langchain_core.vectorstores import VectorStoreRetriever, VectorStore
+from langchain.retrievers.multi_vector import SearchType
+from langchain_core.runnables.config import run_in_executor
+from langchain_text_splitters import TextSplitter
+from langchain.storage._lc_store import create_kv_docstore
+from pydantic import model_validator
 
 # if TYPE_CHECKING:
 from langchain_core.callbacks.manager import (
@@ -21,7 +29,7 @@ import weave
 
 from bot338.ingestion.config import VectorStoreConfig
 from bot338.retriever.reranking import CohereRerankChain
-from bot338.retriever.utils import OpenAIEmbeddingsModel
+from bot338.retriever.utils import EmbeddingsModel
 from bot338.utils import get_logger
 
 
@@ -57,7 +65,7 @@ class CustomVectorStoreRetriever(VectorStoreRetriever):
         return docs
 
     def direct_query(self) -> List[Document]:
-        vector_db = self.vectorstore  # LanceDB
+        vector_db: VectorStore = self.vectorstore  # LanceDB
 
         search_kwargs = self.search_kwargs
 
@@ -68,6 +76,177 @@ class CustomVectorStoreRetriever(VectorStoreRetriever):
         candidates = vector_db.results_to_docs(results)
 
         return candidates
+
+
+class HierarchicalDocumentRetriever(VectorStoreRetriever):
+    """langchain VectorStoreRetriever 에 다가 ParentDocumentRetriever 코드를 더했다."""
+
+    id_key: str = "parent_id"
+
+    docstore: BaseStore[str, Document]
+    """The storage interface for the parent documents"""
+
+    @model_validator(mode="before")
+    @classmethod
+    def shim_docstore(cls, values: Dict) -> Any:
+        byte_store = values.get("byte_store")
+        docstore = values.get("docstore")
+        if byte_store is not None:
+            docstore = create_kv_docstore(byte_store)
+        elif docstore is None:
+            raise Exception("You must pass a `byte_store` parameter.")
+        values["docstore"] = docstore
+        return values
+
+    def _get_relevant_documents(
+        self, query: str, *, run_manager: CallbackManagerForRetrieverRun
+    ) -> List[Document]:
+        """langchain 의 MultiVectorRetriever 의 코드
+
+        Get documents relevant to a query.
+        Args:
+            query: String to find relevant documents for
+            run_manager: The callbacks handler to use
+        Returns:
+            List of relevant documents
+        """
+        if self.search_type == SearchType.mmr:
+            sub_docs = self.vectorstore.max_marginal_relevance_search(
+                query, **self.search_kwargs
+            )
+        elif self.search_type == SearchType.similarity_score_threshold:
+            sub_docs_and_similarities = (
+                self.vectorstore.similarity_search_with_relevance_scores(
+                    query, **self.search_kwargs
+                )
+            )
+            sub_docs = [sub_doc for sub_doc, _ in sub_docs_and_similarities]
+        else:
+            sub_docs = self.vectorstore.similarity_search(query, **self.search_kwargs)
+
+        # We do this to maintain the order of the ids that are returned
+        ids = []
+        for d in sub_docs:
+            if self.id_key in d.metadata and d.metadata[self.id_key] not in ids:
+                ids.append(d.metadata[self.id_key])
+
+        docs = self.docstore.mget(ids)
+
+        return [d for d in docs if d is not None]
+
+    async def _aget_relevant_documents(
+        self, query: str, *, run_manager: AsyncCallbackManagerForRetrieverRun
+    ) -> List[Document]:
+        """langchain 의 MultiVectorRetriever 의 코드, Asynchronously get documents relevant to a query.
+        Args:
+            query: String to find relevant documents for
+            run_manager: The callbacks handler to use
+        Returns:
+            List of relevant documents
+        """
+        if self.search_type == SearchType.mmr:
+            sub_docs = await self.vectorstore.amax_marginal_relevance_search(
+                query, **self.search_kwargs
+            )
+        elif self.search_type == SearchType.similarity_score_threshold:
+            sub_docs_and_similarities = (
+                await self.vectorstore.asimilarity_search_with_relevance_scores(
+                    query, **self.search_kwargs
+                )
+            )
+            sub_docs = [sub_doc for sub_doc, _ in sub_docs_and_similarities]
+        else:
+            sub_docs = await self.vectorstore.asimilarity_search(
+                query, **self.search_kwargs
+            )
+
+        # We do this to maintain the order of the ids that are returned
+        ids = []
+        for d in sub_docs:
+            if self.id_key in d.metadata and d.metadata[self.id_key] not in ids:
+                ids.append(d.metadata[self.id_key])
+        docs = await self.docstore.amget(ids)
+        return [d for d in docs if d is not None]
+
+    def direct_query(self) -> List[Document]:
+        vector_db: VectorStore = self.vectorstore  # LanceDB
+
+        search_kwargs = self.search_kwargs
+
+        results = vector_db._query(
+            query=None, **{**search_kwargs, "k": search_kwargs.get("fetch_k")}
+        )
+
+        sub_docs = vector_db.results_to_docs(results)
+
+        # We do this to maintain the order of the ids that are returned
+        ids = []
+        for d in sub_docs:
+            if self.id_key in d.metadata and d.metadata[self.id_key] not in ids:
+                ids.append(d.metadata[self.id_key])
+        docs = self.docstore.mget(ids)
+        return [d for d in docs if d is not None]
+
+    async def adirect_query(self) -> List[Document]:
+        """
+        TODO
+            - run_in_executor 를 _query 에만 사용하고
+            - mget -> amget 으로 바꾸고
+        """
+        return await run_in_executor(None, self.direct_query)
+
+    def _split_docs_for_adding(
+        self,
+        documents: List[Document],
+        ids: Optional[List[str]] = None,
+        add_to_docstore: bool = True,
+    ) -> Tuple[List[Document], List[Tuple[str, Document]]]:
+        """langchain 의 ParentDocumentRetriever 의 코드"""
+        if self.parent_splitter is not None:
+            documents = self.parent_splitter.split_documents(documents)
+        if ids is None:
+            doc_ids = [str(uuid.uuid4()) for _ in documents]
+            if not add_to_docstore:
+                raise ValueError(
+                    "If ids are not passed in, `add_to_docstore` MUST be True"
+                )
+        else:
+            if len(documents) != len(ids):
+                raise ValueError(
+                    "Got uneven list of documents and ids. "
+                    "If `ids` is provided, should be same length as `documents`."
+                )
+            doc_ids = ids
+
+        docs = []
+        full_docs = []
+        for i, doc in enumerate(documents):
+            _id = doc_ids[i]
+            sub_docs = self.child_splitter.split_documents([doc])
+            if self.child_metadata_fields is not None:
+                for _doc in sub_docs:
+                    _doc.metadata = {
+                        k: _doc.metadata[k] for k in self.child_metadata_fields
+                    }
+            for _doc in sub_docs:
+                _doc.metadata[self.id_key] = _id
+            docs.extend(sub_docs)
+            full_docs.append((_id, doc))
+
+        return docs, full_docs
+
+    async def aadd_documents(
+        self,
+        documents: List[Document],
+        ids: Optional[List[str]] = None,
+        add_to_docstore: bool = True,
+        **kwargs: Any,
+    ) -> None:
+        """lanchain 의 ParentDocumentRetriever 의 코드"""
+        docs, full_docs = self._split_docs_for_adding(documents, ids, add_to_docstore)
+        await self.vectorstore.aadd_documents(docs, **kwargs)
+        if add_to_docstore:
+            await self.docstore.amset(full_docs)
 
 
 class CustomLanceDB(LanceDB):
@@ -131,7 +310,6 @@ class CustomLanceDB(LanceDB):
         tags = kwargs.pop("tags", None) or [] + self._get_retriever_tags()
         return CustomVectorStoreRetriever(vectorstore=self, tags=tags, **kwargs)
 
-    @weave.op()
     def _query(
         self,
         query: Any,
@@ -145,12 +323,11 @@ class CustomLanceDB(LanceDB):
         tbl = self.get_table(name)
         if isinstance(filter, dict):
             filter = to_lance_filter(filter)
-        print(f"[LanceDB > _query]{filter=}")
+
         prefilter = kwargs.get("prefilter", False)
         query_type = kwargs.get("query_type", "vector")
 
         if metrics := kwargs.get("metrics"):
-            print(f"[LanceDB > _query] metrics, {filter=}")
             lance_query = (
                 tbl.search(query=query, vector_column_name=self._vector_key)
                 .limit(k)
@@ -158,7 +335,6 @@ class CustomLanceDB(LanceDB):
                 .where(filter, prefilter=prefilter)
             )
         else:
-            print(f"[LanceDB > _query] else, {filter=}")
             lance_query = (
                 tbl.search(query=query, vector_column_name=self._vector_key)
                 .limit(k)
@@ -173,10 +349,17 @@ class CustomLanceDB(LanceDB):
         return docs
 
 
+class LanceDBWithHierarchicalDocumentRetriever(CustomLanceDB):
+    def as_retriever(self, **kwargs: Any) -> VectorStoreRetriever:
+        tags = kwargs.pop("tags", None) or [] + self._get_retriever_tags()
+
+        return HierarchicalDocumentRetriever(vectorstore=self, tags=tags, **kwargs)
+
+
 class VectorStore:
     """Vector Store for RAG Bot Service"""
 
-    embeddings_model: OpenAIEmbeddingsModel = OpenAIEmbeddingsModel()
+    embeddings_model: EmbeddingsModel = EmbeddingsModel()
 
     def __init__(
         self,
@@ -188,7 +371,7 @@ class VectorStore:
         }  # type: ignore
 
         # 기본 테이블 네임은 table_name: Optional[str] = "vectorstore",
-        self.vectorstore = CustomLanceDB(
+        self.vector_db = CustomLanceDB(
             uri=str(config.persist_dir),
             embedding=self.embeddings_model,
             table_name=self.config.collection_name,
@@ -212,7 +395,7 @@ class VectorStore:
     def as_retriever(self, search_type="mmr", search_kwargs=None, **kwargs):
         if search_kwargs is None:
             search_kwargs = {"k": 5}
-        return self.vectorstore.as_retriever(
+        return self.vector_db.as_retriever(
             search_type=search_type, search_kwargs=search_kwargs, **kwargs
         )
 
@@ -227,7 +410,81 @@ class VectorStore:
         # )
 
 
+class RAGVectorStore(VectorStore):
+    """Vector Store for RAG Bot Service"""
+
+    embeddings_model: EmbeddingsModel = EmbeddingsModel()
+
+    def __init__(
+        self,
+        config: VectorStoreConfig,
+    ):
+        self.config = config
+        self.embeddings_model = {
+            "embedding_model_name": self.config.embedding_model_name,
+        }  # type: ignore
+
+        # 기본 테이블 네임은 table_name: Optional[str] = "vectorstore",
+        self.vector_db = LanceDBWithHierarchicalDocumentRetriever(
+            uri=str(config.persist_dir),
+            embedding=self.embeddings_model,
+            table_name=self.config.collection_name,
+        )
+
+        self.docstore = None
+        self.id_key = None
+
+        if hasattr(config, "docstore_uri"):
+            self.docstore = MongoDBStore(
+                connection_string=config.docstore_uri,
+                db_name=config.docstore_db_name,
+                collection_name=config.docstore_collection_name,
+            )
+        if hasattr(config, "id_key"):
+            self.id_key = config.id_key
+
+    @classmethod
+    def from_config(cls, config: VectorStoreConfig):
+        if config.persist_dir.exists():
+            return cls(config=config)
+        if wandb.run is None:
+            api = wandb.Api()
+            artifact = api.artifact(config.artifact_url)
+        else:
+            artifact = wandb.run.use_artifact(config.artifact_url)
+
+        _ = artifact.download(root=str(config.persist_dir))
+
+        return cls(config=config)
+
+    @weave.op()
+    def as_retriever(
+        self,
+        search_type="mmr",
+        search_kwargs=None,
+        **kwargs,
+    ) -> HierarchicalDocumentRetriever:
+        """
+        - as_retriever 대상은 HierarchicalDocumentRetriever 이다.
+            - docstore, id_key 가 반드시 필요하다.
+        """
+        if search_kwargs is None:
+            search_kwargs = {"k": 5}
+        return self.vector_db.as_retriever(
+            docstore=self.docstore,
+            id_key=self.id_key,
+            search_type=search_type,
+            search_kwargs=search_kwargs,
+            **kwargs,
+        )
+
+
 class SimpleRetrievalEngine:
+    """
+    TODO
+        - `HierarchicalDocumentRetriever` 사용으로인한 변경사항을 반영해야 한다.
+    """
+
     cohere_rerank_chain = CohereRerankChain()
 
     def __init__(self, vector_store: VectorStore, rerank_models: Optional[dict] = None):

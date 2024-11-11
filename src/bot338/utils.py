@@ -51,7 +51,9 @@ class Timer:
         return (self.stop - self.start).total_seconds()
 
 
-def make_document_tokenization_safe(document: Document) -> Document:
+def make_document_tokenization_safe(
+    document: Document, model_name: str = "text-embedding-3-small"
+) -> Document:
     """Removes special tokens from the given documents.
 
     Args:
@@ -62,7 +64,7 @@ def make_document_tokenization_safe(document: Document) -> Document:
     """
 
     # 'cl100k_base' is embedding model for 'text-embedding-3-large', 'text-embedding-3-small'
-    encoding = tiktoken.get_encoding("cl100k_base")
+    encoding = tiktoken.encoding_for_model(model_name)
     special_tokens_set = encoding.special_tokens_set
 
     def remove_special_tokens(text: str) -> str:

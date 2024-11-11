@@ -1,0 +1,20 @@
+services:
+  rag_server:
+    build: .
+    ports:
+      - "${PORT}:8000"  # ${PORT} 환경 변수를 사용해 호스트 포트를 지정
+    volumes:
+      - ./src:/app/src
+      - ./data:/app/data
+      - ./artifacts:/app/artifacts
+      - ./wandb:/app/wandb
+    env_file:
+      - .env
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    # restart: unless-stopped

@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from typing import Any, Dict, List, Optional
 
@@ -37,10 +38,55 @@ def reciprocal_rank_fusion(results: list[list[Document]], top_k: int, k=60):
     return ranked_results[:top_k]
 
 
+@weave.op()
+async def areciprocal_rank_fusion(results: list[list[Document]], top_k: int, k=60):
+    """
+    TODO
+        - 조금 더 나은 방법 강구.
+    """
+    try:
+        if asyncio.iscoroutine(results):
+            results = await results
+
+        if not results:
+            return []
+
+        text_to_doc = {}
+        fused_scores = {}
+
+        for docs in results:
+            if not docs:
+                continue
+
+            # Assumes the docs are returned in sorted order of relevance
+            for rank, doc in enumerate(docs):
+                try:
+                    doc_content = doc.page_content
+                    text_to_doc[doc_content] = doc
+                    if doc_content not in fused_scores:
+                        fused_scores[doc_content] = 0.0
+                    fused_scores[doc_content] += 1 / (rank + k)
+                except Exception as e:
+                    logger.error(f"문서 처리 중 오류 발생: {e}")
+                    continue
+
+        ranked_results = dict(
+            sorted(fused_scores.items(), key=lambda x: x[1], reverse=True)
+        )
+
+        ranked_results = [text_to_doc[text] for text in ranked_results.keys()]
+        return ranked_results[:top_k]
+    except Exception as e:
+        logger.error(f"areciprocal_rank_fusion 처리 중 오류 발생: {e}")
+        return []
+
+
 class FusionRetrieval:
     """
     TODO
         - "lambda_mult" 변수를 ChatConifg 에 선언해서, 주입 받도록 해야한다.
+            - as_retrieval 에서 fetch_k 등 도 마찬가지
+        - direct search 의 경우에도, reranking 적용할지 고민 필요.
     """
 
     def __init__(
@@ -48,11 +94,15 @@ class FusionRetrieval:
         vector_store: VectorStore,
         top_k: int = 5,
         search_type: str = "mmr",
+        fetch_k: int = 10,
+        lambda_mult: Optional[float] = 0.8,
         multilingual_reranker_model: str = "rerank-multilingual-v3.0",  # TODO reranker model 로 변경
     ):
         self.vectorstore = vector_store
         self.top_k = top_k
         self.search_type = search_type
+        self.fetch_k = fetch_k
+        self.lambda_mult = lambda_mult
 
         # self.retriever = self.vectorstore.as_retriever(
         #     search_type=self.search_type,
@@ -80,6 +130,11 @@ class FusionRetrieval:
     def retriever_batch(self, queries):
         """wrapped for weave tracking"""
         return self.retriever.batch(queries)
+
+    @weave.op()
+    async def aretriever_batch(self, queries):
+        """wrapped for weave tracking"""
+        return await self.retriever.abatch(queries)
 
     @property
     def chain(self) -> Runnable:
@@ -179,15 +234,20 @@ class FusionRetrieval:
     def __call__(
         self, inputs: Dict[str, Any], reranking: bool = False
     ) -> Dict[str, Any]:
+        filter_query = self.to_lance_filter(inputs.get("search_metadata", None))
+        if filter_query:
+            prefilter = True
+        else:
+            prefilter = False
 
         self.retriever = self.vectorstore.as_retriever(
             search_type=self.search_type,
             search_kwargs={
                 "k": self.top_k,
-                "fetch_k": 10,
-                "lambda_mult": 0.8,
-                "filter": self.to_lance_filter(inputs.get("search_metadata", None)),
-                "prefilter": inputs.get("prefilter", True),
+                "fetch_k": self.fetch_k,
+                "lambda_mult": self.lambda_mult,
+                "filter": filter_query,
+                "prefilter": prefilter,
             },
         )
         self._chain = self.route_chain(inputs, reranking)
@@ -199,8 +259,104 @@ class FusionRetrieval:
         # else:
         #     return self.chain.invoke(inputs)
 
+    @weave.op()
+    async def aroute_chain(
+        self, inputs: Dict[str, Any], reranking: bool = False
+    ) -> Runnable:
+        # 검색이 필요하냐 안 하냐
+        need_search = inputs["need_search"]
+
+        # 구체적인 의안 언급시 검색
+        async def check_bill_ids(inputs) -> bool:
+            search_metadata = inputs["search_metadata"]
+            bill_ids = []
+            if search_metadata:
+                bill_ids = search_metadata["bill_ids"]
+            return len(bill_ids) > 0
+
+        general_chain = RunnablePassthrough().assign(
+            docs_context=lambda x: self.aretriever_batch(x["all_queries"])
+        ) | RunnablePassthrough().assign(
+            context=lambda x: areciprocal_rank_fusion(x["docs_context"], self.top_k)
+        )
+        skip_chain = RunnablePassthrough().assign(
+            docs_context=lambda x: self.retriever.adirect_query()
+        ) | RunnablePassthrough().assign(context=lambda x: x["docs_context"])
+        branch = RunnableBranch(
+            (check_bill_ids, skip_chain),
+            general_chain,
+        )
+
+        if need_search:
+            if reranking:
+                """
+                TODO
+                    - direct search 의 경우에도, reranking 적용할지 고민 필요.
+                """
+                chain = (
+                    RunnablePassthrough().assign(
+                        docs_context=lambda x: self.aretriever_batch(x["all_queries"])
+                    )
+                    | RunnablePassthrough().assign(
+                        fused_context=lambda x: areciprocal_rank_fusion(
+                            x["docs_context"], self.top_k * 2
+                        )
+                    )
+                    | RunnablePassthrough().assign(
+                        context=lambda x: self.rerank_results(
+                            [x["standalone_query"]], x["fused_context"], self.top_k
+                        )
+                    )
+                )
+            else:
+                chain = branch
+                # chain = RunnablePassthrough().assign(
+                #     docs_context=lambda x: self.retriever_batch(x["all_queries"])
+                # ) | RunnablePassthrough().assign(
+                #     context=lambda x: reciprocal_rank_fusion(
+                #         x["docs_context"], self.top_k
+                #     )
+                # )
+        else:
+
+            async def empty_list(*args, **kwargs):
+                return []
+
+            chain = RunnablePassthrough().assign(
+                docs_context=empty_list
+            ) | RunnablePassthrough().assign(context=empty_list)
+
+        return chain
+
+    @weave.op()
+    async def ainvoke(
+        self, inputs: Dict[str, Any], reranking: bool = False
+    ) -> Dict[str, Any]:
+        if asyncio.iscoroutine(inputs):
+            inputs = await inputs
+
+        filter_query = self.to_lance_filter(inputs.get("search_metadata", None))
+        if filter_query:
+            prefilter = True
+        else:
+            prefilter = False
+
+        self.retriever = self.vectorstore.as_retriever(
+            search_type=self.search_type,
+            search_kwargs={
+                "k": self.top_k,
+                "fetch_k": self.fetch_k,
+                "lambda_mult": self.lambda_mult,
+                "filter": filter_query,
+                "prefilter": prefilter,
+            },
+        )
+        self._chain = await self.aroute_chain(inputs, reranking)
+
+        return await self._chain.ainvoke(inputs)
+
     @staticmethod
-    def to_lance_filter(filter: Optional[Dict[str, str]]) -> str | None:
+    def to_lance_filter(filter: Optional[Dict[str, Any]]) -> str | None:
         """Converts a dict filter to a LanceDB filter string."""
         if filter is None:
             return None

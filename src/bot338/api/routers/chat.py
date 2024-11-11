@@ -1,8 +1,13 @@
+import asyncio
+from typing import AsyncGenerator
+
+import aiohttp
 from fastapi import APIRouter
+from fastapi.responses import StreamingResponse
 from starlette import status
 
-from bot338.chat.chat import Chat, ChatConfig
-from bot338.chat.schemas import ChatRequest, ChatResponse
+from bot338.chat.chat import Chat, ChatConfig, StreamChat
+from bot338.chat.schemas import ChatRequest, ChatResponse, OpenWebUiChatRequest
 from bot338.utils import get_logger
 
 
@@ -11,8 +16,8 @@ logger = get_logger(__name__)
 
 chat_config = ChatConfig()
 logger.info(f"Chat config: {chat_config}")
-chat: Chat | None = None
-
+# chat: Chat | None = None
+chat: StreamChat | None = None
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
@@ -23,6 +28,30 @@ class APIQueryRequest(ChatRequest):
 
 class APIQueryResponse(ChatResponse):
     pass
+
+
+class APICompletionRequest(OpenWebUiChatRequest):
+    pass
+
+
+class ChatStreamError(Exception):
+    """A custom exception for handling chat stream errors with status code and message."""
+
+    def __init__(self, status_code: int, message: str):
+        """
+        Initializes a ChatStreamError with a status code and an error message.
+
+        Args:
+            status_code (int): The HTTP status code to be returned.
+            message (str): The error message to be sent to the client.
+        """
+        self.status_code = status_code  # HTTP 상태 코드
+        self.message = message  # 에러 메시지
+        super().__init__(message)
+
+    def __str__(self):
+        """Returns a formatted error message with the status code."""
+        return f"{self.status_code} Error: {self.message}"
 
 
 @router.post("/query", response_model=APIQueryResponse, status_code=status.HTTP_200_OK)
@@ -50,3 +79,46 @@ def query(
     result = APIQueryResponse(**result.model_dump())
 
     return result
+
+
+@router.post("/completion", status_code=status.HTTP_200_OK)
+async def completion(
+    request: APICompletionRequest,
+) -> StreamingResponse:
+    """요청에 대한 채팅 스트림을 생성하고 반환하는 엔드포인트"""
+
+    try:
+        chat_stream: AsyncGenerator[dict, None] = chat(
+            OpenWebUiChatRequest(
+                query=request.query,
+                chat_history=request.chat_history,
+                application=request.application,
+                reranking=request.reranking,
+            )
+        )
+
+        return StreamingResponse(chat_stream, media_type="text/event-stream")
+
+    except asyncio.TimeoutError:
+        # 타임아웃 발생 시
+        raise ChatStreamError(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            message="External service request timed out.",
+        )
+    except aiohttp.ClientConnectionError as e:
+        # 외부 서비스 연결 실패 시 발생하는 오류 처리
+        raise ChatStreamError(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            message="Failed to connect ot the external service.",
+        )
+    except ValueError as e:
+        # 데이터 유효성 검사 실패 등에서 발생하는 일반적인 예외 처리
+        raise ChatStreamError(
+            status_code=status.HTTP_400_BAD_REQUEST, message=f"Invalid data: {str(e)}"
+        )
+    except Exception as e:
+        # 기타 예상치 못한 에러를 500 상태 코드로 처리
+        raise ChatStreamError(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            message=f"Unexpected error: {str(e)}",
+        )

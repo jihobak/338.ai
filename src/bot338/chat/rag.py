@@ -1,12 +1,12 @@
 import datetime
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import weave
 from langchain_community.callbacks import get_openai_callback
 from pydantic import BaseModel
 
 from bot338.rag.query_handler import QueryEnhancer
-from bot338.rag.response_synthesis import ResponseSynthesizer
+from bot338.rag.response_synthesis import ResponseSynthesizer, StreamResponseSynthesizer
 from bot338.rag.retrieval import FusionRetrieval
 from bot338.retriever import VectorStore
 from bot338.utils import Timer, get_logger
@@ -103,3 +103,63 @@ class RAGPipeline:
         )
 
         return output
+
+
+class StreamRAGPipeline(RAGPipeline):
+    def __init__(
+        self,
+        vector_store: VectorStore,
+        top_k: int = 15,
+        search_type: str = "mmr",
+        fetch_k: int = 10,
+        lambda_mult: Optional[float] = 0.8,
+        multilingual_reranker_model: str = "rerank-multilingual-v3.0",
+        response_synthesizer_model: str = "gpt-4o-2024-08-06",
+        response_synthesizer_temperature: float = 0.1,
+        response_synthesizer_fallback_model: str = "gpt-4o-2024-08-06",
+        response_synthesizer_fallback_temperature: float = 0.1,
+    ):
+        self.vector_store = vector_store
+        self.query_enhancer = QueryEnhancer()
+        self.retrieval = FusionRetrieval(
+            vector_store=vector_store,
+            top_k=top_k,
+            search_type=search_type,
+            fetch_k=fetch_k,
+            lambda_mult=lambda_mult,
+            multilingual_reranker_model=multilingual_reranker_model,
+        )
+        self.response_synthesizer = StreamResponseSynthesizer(
+            model=response_synthesizer_model,
+            temperature=response_synthesizer_temperature,
+            fallback_model=response_synthesizer_fallback_model,
+            fallback_temperature=response_synthesizer_fallback_temperature,
+        )
+
+    @weave.op()
+    async def __call__(
+        self,
+        question: str,
+        chat_history: List[Tuple[str, str]] | None = None,
+        reranking: bool = False,
+    ) -> RAGPipelineOutput:
+        if chat_history is None:
+            chat_history = []
+
+        with get_openai_callback() as query_enhancer_cb, Timer() as query_enhancer_tb:
+            # enhanced_query = self.query_enhancer(
+            #     {"query": question, "chat_history": chat_history}
+            # )
+            enhanced_query = await self.query_enhancer.ainvoke(
+                {"query": question, "chat_history": chat_history}
+            )
+        with Timer() as retrieval_tb:
+            # retrieval_results = self.retrieval(enhanced_query, reranking=reranking)
+            retrieval_results = await self.retrieval.ainvoke(
+                enhanced_query, reranking=reranking
+            )
+
+        with get_openai_callback() as response_cb, Timer() as response_tb:
+            # async for token in self.response_synthesizer(retrieval_results):
+            #     yield token
+            return await self.response_synthesizer(retrieval_results)

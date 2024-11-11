@@ -1,3 +1,4 @@
+import asyncio
 import json
 from typing import List, Optional
 
@@ -31,21 +32,22 @@ class ChatModel:
 
 
 DEFAULT_QUESTION_PROMPT = PromptTemplate.from_template(
-    template="""# 질문
+    template="""[# 질문 및 사용자의 요구사항]
 
 {page_content}
 
 ---
 
-# 질문 메타데이터
+[# 질문 메타데이터]
 
 Intents: 
 
 {intents}
 
-고려해야 할 하위 질문들: 
+[# 사용자에게 응답하기 위해서 답변하기 전 고려해야 할 하위 질문들:] 
 
 {sub_queries}
+---
 """
 )
 
@@ -184,6 +186,19 @@ def combine_documents(
     # document_prompt=DEFAULT_DOCUMENT_PROMPT,
     document_separator="\n\n---\n\n",
 ):
+    cleaned_docs = [clean_document_content(doc) for doc in docs]
+    doc_strings = [build_prompt_for_bill(doc) for doc in cleaned_docs]
+    return document_separator.join(doc_strings)
+
+
+async def acombine_documents(
+    docs,
+    # document_prompt=DEFAULT_DOCUMENT_PROMPT,
+    document_separator="\n\n---\n\n",
+):
+    if asyncio.iscoroutine(docs):
+        docs = await docs
+
     cleaned_docs = [clean_document_content(doc) for doc in docs]
     doc_strings = [build_prompt_for_bill(doc) for doc in cleaned_docs]
     return document_separator.join(doc_strings)

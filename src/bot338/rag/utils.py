@@ -144,10 +144,10 @@ def build_prompt_for_bill(doc: Document):
     metadata = doc.metadata
     summary = doc.page_content
 
-    bill_no = metadata.get("bill_no", "")
+    bill_no = metadata.get("billcode", "")
     bill_name = metadata.get("bill_name", "")
-    bill_uid = metadata.get("bill_uid", "")
-    coactors: List[Optional[dict[str, str]]] = metadata.get("coactors", [])
+    bill_uid = metadata.get("unique_id", "")
+    coactors: List[Optional[dict[str, str]]] = metadata.get("coauthors", [])
     chief_authors: List[str] = metadata.get("chief_authors", [])
 
     #     doc = f"""\

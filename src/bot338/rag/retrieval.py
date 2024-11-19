@@ -271,7 +271,7 @@ class FusionRetrieval:
             search_metadata = inputs["search_metadata"]
             bill_ids = []
             if search_metadata:
-                bill_ids = search_metadata["bill_ids"]
+                bill_ids = search_metadata.get("bill_ids", [])
             return len(bill_ids) > 0
 
         general_chain = RunnablePassthrough().assign(
@@ -335,6 +335,7 @@ class FusionRetrieval:
         if asyncio.iscoroutine(inputs):
             inputs = await inputs
 
+
         filter_query = self.to_lance_filter(inputs.get("search_metadata", None))
         if filter_query:
             prefilter = True
@@ -368,7 +369,7 @@ class FusionRetrieval:
                     continue
 
                 if k == "bill_ids":
-                    k = "metadata.bill_no"
+                    k = "metadata.billcode"
                     # metadata.bill_no IN ('2200180', '2201071', '2201369', '2201386');
                     v = ", ".join([f"'{bid}'" for bid in v])
                     # v = f"'{'|'.join([f'{bid}' for bid in v])}'"
@@ -391,6 +392,9 @@ class FusionRetrieval:
                     condition_str = " OR ".join(condition)
                     condition_str = f"({condition_str})"
                     filter_list.append(condition_str)
+                elif k == 'proposal_date':
+                    k = f"metadata.{k}"
+                    filter_list.append(f"({k} {v})")
                 else:
                     k = f"metadata.{k}"
                     filter_list.append(f"{k} = '{v}'")

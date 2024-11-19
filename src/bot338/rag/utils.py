@@ -128,12 +128,32 @@ def build_coactors_prompt(coactors: list[dict]):
 
 
 def build_prompt_for_chief_authors(chief_authors: List[str], coactors: list[dict]):
+    """
+
+    고려한 샘플들
+    - 의원이 아닌 위원장이 발의한 의안의 경우 metadata 의 예는 다음과 같다. 이런 의안의 chief_authors 를 넣을 수 있어야 한다.
+    {   ...
+        'billcode': '2203263',
+        'sponsor_type': '위원장',
+        'parties': [],
+        'chief_authors': ['국토교통위원장'],
+        'coauthors': [],
+        'substitue': True,
+        'source_type': 'BILL',
+        'status': '공포',
+        'real_bill': True
+    }
+    """
     members = []
 
-    for ca in coactors:
-        if ca["name"] in chief_authors:
-            member = f"""\t<member><name>{ca['name']}</name><party>{ca['party']}</party></member>"""
-            members.append(member)
+    if coactors:
+        for ca in coactors:
+            if ca["name"] in chief_authors:
+                member = f"""\t<member><name>{ca['name']}</name><party>{ca['party']}</party></member>"""
+                members.append(member)
+    else:
+        if chief_authors:
+            members.extend(chief_authors)
 
     members = "\n.".join(members)
     return members

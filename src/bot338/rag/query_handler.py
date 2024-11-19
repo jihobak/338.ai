@@ -1,3 +1,5 @@
+from datetime import datetime
+from dateutil.relativedelta import relativedelta
 import enum
 import json
 from operator import itemgetter
@@ -28,6 +30,26 @@ BOT_NAME_PATTERN = re.compile(r"<@U[A-Z0-9]+>|@[a-zA-Z0-9]+")
 def clean_question(question: str) -> str:
     cleaned_query = BOT_NAME_PATTERN.sub("", question).strip()
     return cleaned_query
+
+
+def get_date_filter_query_str(month_ago: int = 3, only_date: bool = True) -> str:
+    # 오늘 날짜 가져오기
+    today = datetime.now()
+    
+    # 3개월 전 날짜 계산
+    three_months_ago = today - relativedelta(months=month_ago)
+    
+    # 날짜를 YYYY-MM-DD 형식의 문자열로 변환
+    date_str = three_months_ago.strftime('%Y-%m-%d')
+    
+    if only_date:
+        return date_str
+    
+    else:
+        # 쿼리 문자열 생성
+        query = f">= date '{date_str}'"
+        
+        return query
 
 
 class Labels(str, enum.Enum):
@@ -245,13 +267,16 @@ class EnhancedQuery(BaseModel):
         )
 
         # filtering
-        search_metadata = None
+        filter_query_str = get_date_filter_query_str(month_ago=6, only_date=False)
+        search_metadata = {"proposal_date": filter_query_str}
+
         if self.filtering:
             search_metadata: dict = self.search_metadata.model_dump()
             # parties 필드를 value 값으로 변환
             search_metadata["parties"] = [
                 party["name"].value for party in search_metadata["parties"]
             ]
+            search_metadata["proposal_date"] = filter_query_str
 
         return {
             "query": query,

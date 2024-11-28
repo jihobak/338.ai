@@ -303,7 +303,8 @@ If no conversation history exists, the original query should be directly copied 
         """Parse the output of the model"""
         question = clean_question(query)
 
-        if not chat_history:
+        if not chat_history or (self.standalone_query is None):
+            # 간혹 QueryAnalysis 의 결과에 standalone_query 조차 실패하는 경우가 있음.
             standalone_query = question
         else:
             standalone_query = self.standalone_query

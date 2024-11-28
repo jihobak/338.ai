@@ -6,6 +6,7 @@ import weave
 from langchain_cohere import CohereRerank
 from langchain_core.documents import Document
 from langchain_core.runnables import Runnable, RunnablePassthrough, RunnableBranch
+from langchain_core.vectorstores import VectorStoreRetriever
 from pydantic import BaseModel
 
 from bot338.retriever.base import VectorStore
@@ -234,13 +235,13 @@ class FusionRetrieval:
     def __call__(
         self, inputs: Dict[str, Any], reranking: bool = False
     ) -> Dict[str, Any]:
-        filter_query = self.to_lance_filter(inputs.get("search_metadata", None))
+        filter_query = inputs.get("search_metadata", None)
         if filter_query:
             prefilter = True
         else:
             prefilter = False
 
-        self.retriever = self.vectorstore.as_retriever(
+        self.retriever: VectorStoreRetriever = self.vectorstore.as_retriever(
             search_type=self.search_type,
             search_kwargs={
                 "k": self.top_k,
@@ -266,13 +267,10 @@ class FusionRetrieval:
         # 검색이 필요하냐 안 하냐
         need_search = inputs["need_search"]
 
-        # 구체적인 의안 언급시 검색
-        async def check_bill_ids(inputs) -> bool:
-            search_metadata = inputs["search_metadata"]
-            bill_ids = []
-            if search_metadata:
-                bill_ids = search_metadata.get("bill_ids", [])
-            return len(bill_ids) > 0
+        async def check_need_content_search(inputs) -> bool:
+            requires_content_search = inputs.get("requires_content_search", False)
+            logger.info(f"{requires_content_search=}")
+            return requires_content_search
 
         general_chain = RunnablePassthrough().assign(
             docs_context=lambda x: self.aretriever_batch(x["all_queries"])
@@ -283,8 +281,8 @@ class FusionRetrieval:
             docs_context=lambda x: self.retriever.adirect_query()
         ) | RunnablePassthrough().assign(context=lambda x: x["docs_context"])
         branch = RunnableBranch(
-            (check_bill_ids, skip_chain),
-            general_chain,
+            (check_need_content_search, general_chain),
+            skip_chain,
         )
 
         if need_search:
@@ -335,14 +333,14 @@ class FusionRetrieval:
         if asyncio.iscoroutine(inputs):
             inputs = await inputs
 
-
-        filter_query = self.to_lance_filter(inputs.get("search_metadata", None))
+        filter_query = inputs.get("search_metadata", None)
+        logger.info(f"{filter_query=}")
         if filter_query:
             prefilter = True
         else:
             prefilter = False
 
-        self.retriever = self.vectorstore.as_retriever(
+        self.retriever: VectorStoreRetriever = self.vectorstore.as_retriever(
             search_type=self.search_type,
             search_kwargs={
                 "k": self.top_k,
@@ -392,7 +390,7 @@ class FusionRetrieval:
                     condition_str = " OR ".join(condition)
                     condition_str = f"({condition_str})"
                     filter_list.append(condition_str)
-                elif k == 'proposal_date':
+                elif k == "proposal_date":
                     k = f"metadata.{k}"
                     filter_list.append(f"({k} {v})")
                 else:

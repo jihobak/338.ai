@@ -340,7 +340,7 @@ If no conversation history exists, the original query should be directly copied 
                 f"\n\t{QUERY_INTENTS[intent.label.value]}\n\n"
             )
         all_queries = (
-            [standalone_query] + keywords + sub_queries + vector_search_queries
+            vector_search_queries + [standalone_query] + keywords + sub_queries
         )
 
         if self.content_search:
@@ -712,7 +712,9 @@ class QueryEnhancer:
                 RunnableLambda(lambda x: convert_to_messages(x["chat_history"]))
                 | RunnableLambda(lambda x: get_buffer_string(x, "user", "assistant"))
             ),
-            today=RunnableLambda(lambda x: datetime.now(ZoneInfo("Asia/Seoul"))),
+            today=RunnableLambda(
+                lambda x: datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d")
+            ),
         )
 
         full_query_enhancer_chain = input_chain | query_enhancer_chain
@@ -733,7 +735,7 @@ class QueryEnhancer:
 
     @weave.op()
     def __call__(self, inputs: Dict[str, Any] = None) -> Dict[str, Any]:
-        return self.chain.invoke(inputs)
+        return self.chain.ainvoke(inputs)
 
     @weave.op()
     async def ainvoke(self, inputs: Dict[str, Any] = None) -> Dict[str, Any]:

@@ -167,27 +167,16 @@ def build_prompt_for_bill(doc: Document):
     bill_no = metadata.get("billcode", "")
     bill_name = metadata.get("bill_name", "")
     bill_uid = metadata.get("unique_id", "")
+    proposal_date = metadata.get("proposal_date", "")
+    status = metadata.get("status", "")
+    assembly = metadata.get("assembly", "")
     coactors: List[Optional[dict[str, str]]] = metadata.get("coauthors", [])
     chief_authors: List[str] = metadata.get("chief_authors", [])
 
-    #     doc = f"""\
-    # <bill>
-    # <bill_no>{bill_no}</bill_no>
-    # <title>{bill_name}</title>
-    # <cheif_authors>
-    # {build_prompt_for_chief_authors(chief_authors, coactors)}
-    # </cheif_authors>
-    # <coauthors>
-    # {build_coactors_prompt(coactors)}
-    # </coauthors>
-    # <contents>
-    #     {summary}
-    # </contents>
-    # </bill>
-    # """
     doc = f"""\
 <bill>
-<bill_no>{bill_no}</bill_no>
+<proposal_date>{proposal_date}</proposal_date>
+<bill_id>{bill_no}</bill_id>
 <bill_link>https://likms.assembly.go.kr/bill/billDetail.do?billId={bill_uid}</bill_link>
 <title>{bill_name}</title>
 <cheif_authors>

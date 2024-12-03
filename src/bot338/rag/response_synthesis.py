@@ -1,6 +1,8 @@
 import asyncio
+from datetime import datetime
 from operator import itemgetter
 from typing import Any, Dict, AsyncGenerator
+from zoneinfo import ZoneInfo
 
 import weave
 from langchain_core.output_parsers import StrOutputParser
@@ -27,6 +29,7 @@ RESPONSE_SYNTHESIS_SYSTEM_PROMPT = """\
 
 [# 의안의 포맷에관한 정보]
 - 의안 문서는 <doc>, </doc> 태그로 감싸져있다.
+- 의안의 제안날짜는 `<proposal_date>` 태그에 있습니다.
 - 의안의 제목은 <title> 태그를 사용한다.
 - 의안의 원문 링크는 <bill_link> 태그를 사용한다.
 - 의안의 구분자 역할을 하는 id 는 <bill_id> 태그를 사용한다.
@@ -34,10 +37,15 @@ RESPONSE_SYNTHESIS_SYSTEM_PROMPT = """\
 - 의안의 대표 발의자들은 <chief_authors> 태그안에 들어있다.
 - 의안의 내용은 <contents>, </contents> 태그안에 들어있다. 의안의 내용은 의안의 제안이유와 의안의 주요 내용이 들어있다.
 
+[# 주의 사항]
+- 현재 국회는 22대 국회이며, 사용자가 질문하는 시점은 {today} 입니다.
+- 22대 국회의 여당은 '국민의힘' 이고 야당은 '더불어민주당(더불어 민주당)', '개혁신당', '진보당', '기본소득당', '조국혁신당' 입니다. 물론 무소속인 국회의원도 있습니다.
+- '최근' 이라함은, 최근 3개월을 의미한다.
+
 [# 요구사항]
 - 의안을 언급할 때는 반드시 출처를 남겨야 하고, 출처는 Markdown 링크 포맷으로 [title](bill_link)(의안 번호: bill_id)를 사용한다.
-    - 출처의 예) [자동차관리법 일부개정법률안](https://likms.assembly.go.kr/bill/billDetail.do?billId=PRC_M2N4L0K8K1I1J1F0F2D9C4D8B6C3K0)(의안번호: 2200180)
-- 의안이 처음으로 언급되는 경우는, 기본 포맷에 정당을 추가해서 표시합니다. `[title](bill_link)(party, 의안 번호: bill_id)` 형태로 작성합니다.
+    - 출처의 예) [자동차관리법 일부개정법률안](https://likms.assembly.go.kr/bill/billDetail.do?billId=PRC_M2N4L0K8K1I1J1F0F2D9C4D8B6C3K0)(의안번호: 2200180, 제안날짜: 2024-08-27)
+- 의안이 처음으로 언급되는 경우는, 기본 포맷에 정당과 제안날짜를 추가해서 표시합니다. `[title](bill_link)(party, 의안 번호: bill_id, 제안날짜: proposal_date)` 형태로 작성합니다.
 """
 
 USER_PROMPT = """\
@@ -122,8 +130,14 @@ class ResponseSynthesizer:
 - 명확한 전달력: 전문 용어를 사용하는 동시에, 독자들이 이해할 수 있도록 쉽게 설명하는 능력을 갖춘 기자입니다.
 - 객관성과 중립성: 기사를 작성할 때, 객관적인 시각을 유지하고, 감정적인 표현을 피하며 사실을 기반으로 **중립적이며 객관적인 어조**로 작성합니다.
 
+[# 주의 사항]
+- 현재 국회는 22대 국회이며, 사용자가 질문하는 시점은 {today} 입니다.
+- 22대 국회의 여당은 '국민의힘' 이고 야당은 '더불어민주당(더불어 민주당)', '개혁신당', '진보당', '기본소득당', '조국혁신당' 입니다. 물론 무소속인 국회의원도 있습니다.
+- '최근' 이라함은, 최근 3개월을 의미한다.
+
 [## 의안 문서 포맷]
 - 의안 문서는 `<doc>`, `</doc>` 태그로 감싸져 있습니다.
+- 의안의 제안날짜는 `<proposal_date>` 태그에 있습니다.
 - 의안의 제목은 `<title>` 태그로 표시됩니다.
 - 의안의 원문 링크는 `<bill_link>` 태그로 제공됩니다.
 - 의안의 고유 식별자는 `<bill_id>` 태그로 표시됩니다.
@@ -360,6 +374,7 @@ class StreamResponseSynthesizer(ResponseSynthesizer):
         #     yield token
         return self.chain.astream(inputs)
 
+    @weave.op()
     def _load_chain(self, model: ChatOpenAI) -> Runnable:
         response_synthesis_chain = (
             RunnableLambda(
@@ -372,6 +387,7 @@ class StreamResponseSynthesizer(ResponseSynthesizer):
                     ),
                     "need_search": x["need_search"],
                     "need_write_article": x["need_write_article"],
+                    "today": datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d"),
                 }
             )
             | RunnableParallel(

@@ -168,16 +168,25 @@ class HierarchicalDocumentRetriever(VectorStoreRetriever):
         docs = await self.docstore.amget(ids)
         return [d for d in docs if d is not None]
 
-    def direct_query(self) -> List[Document]:
+    def direct_query(
+        self, k: Optional[int] = None, sort: bool = True
+    ) -> List[Document]:
         vector_db: VectorStore = self.vectorstore  # LanceDB
 
         search_kwargs = self.search_kwargs
 
         results = vector_db._query(
-            query=None, **{**search_kwargs, "k": search_kwargs.get("fetch_k")}
+            query=None,
+            **{**search_kwargs, "k": k if k else search_kwargs.get("fetch_k")},
         )
 
         sub_docs = vector_db.results_to_docs(results)
+
+        if sort:
+            sort_by_proposal = lambda docs: sorted(
+                docs, key=lambda doc: doc.metadata["proposal_date"], reverse=True
+            )
+            sub_docs = sort_by_proposal(sub_docs)
 
         # We do this to maintain the order of the ids that are returned
         ids = []
@@ -187,13 +196,15 @@ class HierarchicalDocumentRetriever(VectorStoreRetriever):
         docs = self.docstore.mget(ids)
         return [d for d in docs if d is not None]
 
-    async def adirect_query(self) -> List[Document]:
+    async def adirect_query(
+        self, k: Optional[int] = None, sort: bool = True
+    ) -> List[Document]:
         """
         TODO
             - run_in_executor 를 _query 에만 사용하고
             - mget -> amget 으로 바꾸고
         """
-        return await run_in_executor(None, self.direct_query)
+        return await run_in_executor(None, self.direct_query, k, sort)
 
     def _split_docs_for_adding(
         self,

@@ -309,10 +309,12 @@ If no conversation history exists, the original query should be directly copied 
         else:
             standalone_query = self.standalone_query
 
+        need_search = self.need_search
         if self.avoid_query:
             keywords = []
             sub_queries = []
             vector_search_queries = []
+            need_search = False
 
         else:
             keywords = (
@@ -359,7 +361,7 @@ If no conversation history exists, the original query should be directly copied 
             "avoid_query": self.avoid_query,
             "chat_history": chat_history,
             "all_queries": all_queries,
-            "need_search": self.need_search,
+            "need_search": need_search,
             "need_write_article": self.need_write_article,
             "article_style": self.article_style,
             "requires_content_search": requires_content_search,

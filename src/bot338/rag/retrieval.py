@@ -41,7 +41,9 @@ def reciprocal_rank_fusion(results: list[list[Document]], top_k: int, k=60):
 
 
 @weave.op()
-async def areciprocal_rank_fusion(results: list[list[Document]], top_k: int, k=60):
+async def areciprocal_rank_fusion(
+    results: list[list[Document]], top_k: Optional[int] = None, k: int = 60
+):
     """
     TODO
         - 조금 더 나은 방법 강구.
@@ -69,7 +71,9 @@ async def areciprocal_rank_fusion(results: list[list[Document]], top_k: int, k=6
                         fused_scores[doc_content] = 0.0
                     fused_scores[doc_content] += 1 / (rank + k)
                 except Exception as e:
-                    logger.error(f"문서 처리 중 오류 발생: {e}")
+                    logger.error(
+                        f"[areciprocal_rank_fusion] 문서 처리 중 오류 발생: {e}, doc:{doc}"
+                    )
                     continue
 
         ranked_results = dict(
@@ -77,9 +81,13 @@ async def areciprocal_rank_fusion(results: list[list[Document]], top_k: int, k=6
         )
 
         ranked_results = [text_to_doc[text] for text in ranked_results.keys()]
-        return ranked_results[:top_k]
+
+        if top_k:
+            return ranked_results[:top_k]
+        else:
+            return ranked_results
     except Exception as e:
-        logger.error(f"areciprocal_rank_fusion 처리 중 오류 발생: {e}")
+        logger.error(f"[areciprocal_rank_fusion] 오류 발생: {e}")
         return []
 
 
@@ -257,10 +265,14 @@ class FusionRetrieval:
         return chain
 
     @weave.op()
-    def __call__(
+    async def __call__(
         self, inputs: Dict[str, Any], reranking: bool = False
     ) -> Dict[str, Any]:
+        if asyncio.iscoroutine(inputs):
+            inputs = await inputs
+
         filter_query = inputs.get("search_metadata", None)
+        logger.info(f"{filter_query=}")
         if filter_query:
             prefilter = True
         else:
@@ -276,14 +288,9 @@ class FusionRetrieval:
                 "prefilter": prefilter,
             },
         )
-        self._chain = self.route_chain(inputs, reranking)
+        self._chain = await self.aroute_chain(inputs, reranking)
 
-        return self._chain.invoke(inputs)
-
-        # if reranking:
-        #     return self.chain_with_reranking.invoke(inputs)
-        # else:
-        #     return self.chain.invoke(inputs)
+        return await self._chain.ainvoke(inputs)
 
     @weave.op()
     async def aroute_chain(
@@ -292,54 +299,47 @@ class FusionRetrieval:
         # 검색이 필요하냐 안 하냐
         need_search = inputs["need_search"]
 
-        async def check_need_content_search(inputs) -> bool:
-            requires_content_search = inputs.get("requires_content_search", False)
-            logger.info(f"{requires_content_search=}")
-            return requires_content_search
-
-        general_chain = RunnablePassthrough().assign(
-            docs_context=lambda x: self.aretriever_batch(x["all_queries"])
-        ) | RunnablePassthrough().assign(
-            context=lambda x: areciprocal_rank_fusion(x["docs_context"], self.top_k)
-        )
-        skip_chain = RunnablePassthrough().assign(
-            docs_context=lambda x: self.retriever.adirect_query()
-        ) | RunnablePassthrough().assign(context=lambda x: x["docs_context"])
-        branch = RunnableBranch(
-            (check_need_content_search, general_chain),
-            skip_chain,
-        )
-
         if need_search:
+
+            async def check_need_content_search(inputs) -> bool:
+                requires_content_search = inputs.get("requires_content_search", False)
+                logger.info(f"{requires_content_search=}")
+                return requires_content_search
+
             if reranking:
-                """
-                TODO
-                    - direct search 의 경우에도, reranking 적용할지 고민 필요.
-                """
-                chain = (
+                general_chain = (
                     RunnablePassthrough().assign(
                         docs_context=lambda x: self.aretriever_batch(x["all_queries"])
                     )
                     | RunnablePassthrough().assign(
                         fused_context=lambda x: areciprocal_rank_fusion(
-                            x["docs_context"], self.top_k * 2
+                            x["docs_context"]
                         )
                     )
                     | RunnablePassthrough().assign(
-                        context=lambda x: self.rerank_results(
+                        context=lambda x: self.arerank_results(
                             [x["standalone_query"]], x["fused_context"], self.top_k
                         )
                     )
                 )
             else:
-                chain = branch
-                # chain = RunnablePassthrough().assign(
-                #     docs_context=lambda x: self.retriever_batch(x["all_queries"])
-                # ) | RunnablePassthrough().assign(
-                #     context=lambda x: reciprocal_rank_fusion(
-                #         x["docs_context"], self.top_k
-                #     )
-                # )
+                general_chain = RunnablePassthrough().assign(
+                    docs_context=lambda x: self.aretriever_batch(x["all_queries"])
+                ) | RunnablePassthrough().assign(
+                    context=lambda x: areciprocal_rank_fusion(
+                        x["docs_context"], self.top_k
+                    )
+                )
+
+            skip_chain = RunnablePassthrough().assign(
+                docs_context=lambda x: self.retriever.adirect_query(k=50, sort=True)
+            ) | RunnablePassthrough().assign(context=lambda x: x["docs_context"])
+
+            chain = RunnableBranch(
+                (check_need_content_search, general_chain),
+                skip_chain,
+            )
+
         else:
 
             async def empty_list(*args, **kwargs):
@@ -379,51 +379,3 @@ class FusionRetrieval:
 
         return await self._chain.ainvoke(inputs)
 
-    @staticmethod
-    def to_lance_filter(filter: Optional[Dict[str, Any]]) -> str | None:
-        """Converts a dict filter to a LanceDB filter string."""
-        if filter is None:
-            return None
-
-        try:
-            filter_list = []
-            for k, v in filter.items():
-                if not v:
-                    continue
-
-                if k == "bill_ids":
-                    k = "metadata.billcode"
-                    # metadata.bill_no IN ('2200180', '2201071', '2201369', '2201386');
-                    v = ", ".join([f"'{bid}'" for bid in v])
-                    # v = f"'{'|'.join([f'{bid}' for bid in v])}'"
-                    # v = "({})".format('|'.join([f"'{bid}'" for bid in v]))
-                    # filter_list.append(f"CAST(regexp_match({k}, {v}) AS BOOLEAN)")
-                    filter_list.append(f"({k} IN ({v}))")
-                elif k == "parties":
-                    k = "metadata.parties"
-                    condition = []
-                    for party in v:
-                        condition.append(f"array_contains({k}, '{party}')")
-                    condition_str = " AND ".join(condition)
-                    condition_str = f"({condition_str})"
-                    filter_list.append(condition_str)
-                elif k == "member_names":
-                    k = "metadata.chief_authors"  # 나중에 coactors 의 이름만 array 로 따로 만들어서 디비에 넣으면 된다.
-                    condition = []
-                    for coactor in v:
-                        condition.append(f"array_contains({k}, '{coactor}')")
-                    condition_str = " OR ".join(condition)
-                    condition_str = f"({condition_str})"
-                    filter_list.append(condition_str)
-                elif k == "proposal_date":
-                    k = f"metadata.{k}"
-                    filter_list.append(f"({k} {v})")
-                else:
-                    k = f"metadata.{k}"
-                    filter_list.append(f"{k} = '{v}'")
-        except Exception as e:
-            logger.error(e)
-            return None
-        else:
-            # return " OR ".join([f"{k} = '{v}'" for k, v in filter.items()])
-            return " AND ".join(filter_list)

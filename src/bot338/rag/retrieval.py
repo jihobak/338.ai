@@ -7,6 +7,7 @@ from langchain_cohere import CohereRerank
 from langchain_core.documents import Document
 from langchain_core.runnables import Runnable, RunnablePassthrough, RunnableBranch
 from langchain_core.vectorstores import VectorStoreRetriever
+from langchain_core.runnables.config import run_in_executor
 from pydantic import BaseModel
 
 from bot338.retriever.base import VectorStore
@@ -126,6 +127,30 @@ class FusionRetrieval:
         query = "\n".join(queries)
         ranked_results = reranker.compress_documents(documents=context, query=query)
         return ranked_results
+
+    @weave.op()
+    async def arerank_results(
+        self,
+        queries: List[str],
+        context: List[Document],
+        top_k: int = 5,
+    ):
+        try:
+            reranker = CohereRerank(top_n=top_k, model=self.multilingual_reranker_model)
+            query = "\n".join(queries)
+
+            if asyncio.iscoroutine(context):
+                context = await context
+
+            ranked_results = await run_in_executor(
+                None, reranker.compress_documents, documents=context, query=query
+            )
+
+            return ranked_results
+
+        except BaseException as error:
+            logger.error(f"[Reranking Error] {error}")
+            return []
 
     @weave.op()
     def retriever_batch(self, queries):

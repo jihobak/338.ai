@@ -1,7 +1,5 @@
-import asyncio
 from typing import AsyncGenerator
 
-import aiohttp
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 from starlette import status
@@ -99,26 +97,9 @@ async def completion(
 
         return StreamingResponse(chat_stream, media_type="text/event-stream")
 
-    except asyncio.TimeoutError:
-        # 타임아웃 발생 시
-        raise ChatStreamError(
-            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-            message="External service request timed out.",
-        )
-    except aiohttp.ClientConnectionError as e:
-        # 외부 서비스 연결 실패 시 발생하는 오류 처리
-        raise ChatStreamError(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            message="Failed to connect ot the external service.",
-        )
-    except ValueError as e:
-        # 데이터 유효성 검사 실패 등에서 발생하는 일반적인 예외 처리
-        raise ChatStreamError(
-            status_code=status.HTTP_400_BAD_REQUEST, message=f"Invalid data: {str(e)}"
-        )
-    except Exception as e:
+    except BaseException as e:
         # 기타 예상치 못한 에러를 500 상태 코드로 처리
         raise ChatStreamError(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             message=f"Unexpected error: {str(e)}",
-        )
+        ) from e

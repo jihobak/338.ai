@@ -1,9 +1,10 @@
-import json
+import asyncio
 from typing import Any, List, AsyncGenerator
 
 import weave
-
 import wandb
+import pydantic
+
 from bot338.chat.config import ChatConfig
 from bot338.chat.rag import RAGPipeline, RAGPipelineOutput, StreamRAGPipeline
 from bot338.chat.schemas import ChatRequest, ChatResponse, OpenWebUiChatRequest
@@ -175,9 +176,10 @@ class StreamChat(Chat):
                 history.append((role, content))
         return await self.rag_pipeline(query, history, reranking)
 
+    @weave.op()
     async def __call__(
         self, chat_request: OpenWebUiChatRequest
-    ) -> AsyncGenerator[dict, None]:
+    ) -> AsyncGenerator[str, None]:
         """Handles the chat request and returns the chat response.
 
         Args:
@@ -193,11 +195,39 @@ class StreamChat(Chat):
             chat_request.reranking,
         )
 
-        async for chunk in chain:
-            if isinstance(chunk, dict):
-                if "response" in chunk:
-                    yield chunk["response"]
+        try:
+            async for chunk in chain:
+                if isinstance(chunk, dict):
+                    if "response" in chunk:
+                        yield chunk["response"]
+                    else:
+                        yield ""
                 else:
                     yield ""
-            else:
-                yield ""
+
+        except pydantic.ValidationError as validation_error:
+            """
+            경험한 케이스
+                - weave 에서 openai api 의 종료 이유에 해당하는 value 를 처음 보는 경우에 발생했다.
+                - create_query_str 메서드에서, standalone_query 가 None 일 때, langchain 의 Document(...) 에서 에러 발생
+
+            예상되는 케이스
+                - tooling calling 의 parsing 에러
+            """
+            logger.error(f">>>> [SSE: pydantic.ValidationError] {validation_error}")
+
+            yield f"에러가 발생했습니다. 계속된다면, 고객센터로 문의주세요.(code: p1)"
+
+        except asyncio.CancelledError as e:
+            """
+            경험한 케이스
+                - RAG 파이프라인이 실행이 오래 걸려서, OpenWebUI 파이프에서 설정한 요청시간 초과 한 경우, 연결을 종료인한 기존 작업 취소
+            """
+            logger.error(f">>>> [SSE: asyncio.CancelledError] {str(e)}")
+
+            yield f"에러가 발생했습니다. 계속된다면, 고객센터로 문의주세요.(code: p2)"
+
+        except BaseException as e:
+            logger.error(f">>>> [SSE: 생각지 못한 에러]: {str(e)}")
+
+            yield f"에러가 발생했습니다. 계속된다면, 고객센터로 문의주세요.(code: p3)"

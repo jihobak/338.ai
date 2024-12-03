@@ -102,6 +102,8 @@ async def root(background_tasks: BackgroundTasks):
 @app.exception_handler(chat_router.ChatStreamError)
 async def chat_stream_error_handler(request, exc: chat_router.ChatStreamError):
     """ChatStreamError 발생 시 적절한 응답을 생성하는 핸들러"""
+    logger.error(f"{exc.message}")
+
     error_stream = [
         f"{exc.message}\n",
     ]

@@ -147,19 +147,14 @@ class StreamRAGPipeline(RAGPipeline):
             chat_history = []
 
         with get_openai_callback() as query_enhancer_cb, Timer() as query_enhancer_tb:
-            # enhanced_query = self.query_enhancer(
-            #     {"query": question, "chat_history": chat_history}
-            # )
-            enhanced_query = await self.query_enhancer.ainvoke(
+            enhanced_query = await self.query_enhancer(
                 {"query": question, "chat_history": chat_history}
             )
+
         with Timer() as retrieval_tb:
-            # retrieval_results = self.retrieval(enhanced_query, reranking=reranking)
-            retrieval_results = await self.retrieval.ainvoke(
+            retrieval_results = await self.retrieval(
                 enhanced_query, reranking=reranking
             )
 
         with get_openai_callback() as response_cb, Timer() as response_tb:
-            # async for token in self.response_synthesizer(retrieval_results):
-            #     yield token
             return await self.response_synthesizer(retrieval_results)

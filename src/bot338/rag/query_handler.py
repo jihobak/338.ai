@@ -62,8 +62,16 @@ class Labels(str, enum.Enum):
     NEEDS_MORE_INFO = "needs_more_info"
     OPINION_REQUEST = "opinion_request"
     NEFARIOUS_QUERY = "nefarious_query"
+    BILL_SUMMARY = "bill_summary"  # 의안 요약
+    BILL_COMPARISON = "bill_comparison"  # 의안 비교분석
+    BILL_BY_LEGISLATOR = "bill_by_legislator"  # 의원 중심 의안 검색
+    BILL_BY_PARTY = "bill_by_party"  # 정담 중심 의안 검색
     OTHER = "other"
 
+    Labels.BILL_SUMMARY.value: "쿼리가 특정 법안의 주요 내용을 요약하는 요청과 관련되어 있습니다 ex) '전기차 충전소 설치 관련 법안 내용을 요약해줘'",
+    Labels.BILL_COMPARISON.value: "쿼리가 두 개 이상의 법안을 비교하고 차이점과 공통점을 설명하는 요청과 관련되어 있습니다. ex) '전기차 관련 법안 두 개의 차이점을 비교해줘'",
+    Labels.BILL_BY_LEGISLATOR.value: "쿼리가 특정 의원(들)이 발의한 의안을 찾아 분석하는 것과 관련이 있습니다",
+    Labels.BILL_BY_PARTY.value: "쿼리가 특정 정당(들)에서 발의된 의안을 찾아 분석하는 것과 관련이 있습니다.",
 
 INTENT_DESCRIPTIONS = {
     Labels.SEARCH_BILL.value: "쿼리가 국회에서 발의된 의안 검색과 관련이 있다. ex) '국회에서 발의된 전기차 안전관련 의안을 찾아줘'",
@@ -81,7 +89,50 @@ QUERY_INTENTS = {
     [**주의 사항**]
       - 검색된 의안의 내용이 사용자의 쿼리(질문, 요청)과 관련이 없을 경우, 검색된 의안이 없음을 사용자에게 친절히 알려주고, 자연스럽게 다시 질문해볼 것을 요청합니다.
     """,
-    Labels.WRITE_ARTICLE.value: "쿼리가 발의안에 관한 기사 작성 요청과 관련되어 있습니다. 사용자의 요구사항과 의안내용을 고려해서 훌륭한 기사를 작성합니다.",
+    Labels.WRITE_ARTICLE.value: """쿼리가 발의안에 관한 기사 작성 요청과 관련되어 있습니다. 사용자의 요구사항과 기사 작성 가이드라인를 고려해서 훌륭한 기사를 작성합니다.""",
+    Labels.BILL_SUMMARY.value: """쿼리가 특정 법안의 요약 정보를 요청하는 것과 관련되어 있습니다.
+    사용자가 이해하기 쉽도록 법안의 주요 목적, 배경, 핵심 조항 및 사회적 영향을 간결하게 설명해야 합니다.
+    [**Important Considerations**]
+      - 요약은 사용자 요청에 맞춰 상세하거나 간략하게 작성됩니다.
+      - 법안 내용이 명확하지 않을 경우, 사용자에게 추가적인 요청을 통해 명확히 하고 작업을 진행합니다.
+    """,
+    # Labels.BILL_COMPARISON.value: """쿼리가 두 개 이상의 법안을 비교하는 것과 관련되어 있습니다.
+    # 각 법안의 목적, 주요 내용, 사회적 영향 등을 비교하고, 공통점과 차이점을 명확하게 설명해야 합니다.
+    # [**Important Considerations**]
+    #   - 비교는 핵심적인 차이점과 공통점을 중심으로 간결하고 명확하게 작성합니다.
+    #   - 법안이 서로 비교가 어렵거나 연관성이 부족한 경우, 사용자에게 추가적인 요청을 통해 작업의 방향을 명확히 합니다.
+    #   - 전문성과 중립성 유지
+    #   - 정치적 편향 최소화
+    #   - 시각적 요약 정보 포함 가능 (ex. 표) 하다. 단, 효과적일 때만 사용한다.
+    # """,
+    Labels.BILL_COMPARISON.value: """쿼리가 두 개 이상의 법안을 비교하는 것과 관련되어 있습니다.
+    Conduct systematic and objective comparative analysis of multiple bills:
+    - Provide multi-dimensional comparison perspectives
+    - Provide evidence-based analysis
+    
+    Processing procedure:
+    1. Identify bills to be compared
+    2. Analyze detailed contents of each bill
+    3. Establish comparison dimensions (legal, social, economic impacts, etc.)
+    4. Perform systematic comparative analysis
+    5. Write a comprehensive report
+    """,
+    Labels.BILL_BY_LEGISLATOR.value: """쿼리가 특정 의원(들)이 발의한 의안을 찾아 분석하는 것과 관련이 있습니다
+    [# Important Considerations]
+      - 검색된 의안들의 핵심 내용을 설명해서 검색결과를 제공한다.
+      - 의안들의 정책 영역, 핵심 내용, 입법 방향성 체계적 정리
+      - 의안의 상세 정보 및 맥락 분석을 해서, 입법 활동에대한 분석 보고서를 작성한다.
+      - 전문성과 중립성 유지
+      - 정치적 편향 최소화
+    """,
+    Labels.BILL_BY_PARTY.value: """쿼리가 특정 정당(들)에서 발의된 의안을 찾아 분석하는 것과 관련이 있습니다.
+    [# Important Considerations]
+      - 검색된 의안들의 핵심 내용을 설명해서 검색결과를 제공한다.
+      - 의안들의 정책 영역, 핵심 내용, 입법 방향성 체계적 정리
+      - 정당의 의안 발의 현황을 종합적으로 분석
+      - 객관적이고 중립적인 분석 보고서 작성
+      - 정치적 편향 최소화
+    """,
     Labels.UNRELATED.value: "이 쿼리는 국회의 발의안 또는 관련 기사 작성과 관련이 없습니다. 해당 주제에 대한 답변을 피하고, 사용자가 질문을 수정하도록 요청하십시오.",
     Labels.NEEDS_MORE_INFO.value: "이 쿼리에 답변하려면 추가 정보가 필요합니다. 사용자가 제공한 정보가 불충분하므로, 추가 질문을 통해 더 많은 정보를 요청한 후 답변하십시오.",
     Labels.OPINION_REQUEST.value: "질문이 의견을 묻고 있습니다. 주관적인 의견보다는 객관적인 정보를 제공하고, 더 깊은 의견이 필요한 경우 사용자가 더 명확한 질문을 하도록 유도하십시오.",
@@ -270,7 +321,15 @@ If no conversation history exists, the original query should be directly copied 
     def need_search(self) -> bool:
         return any(
             [
-                intent.label in [Labels.SEARCH_BILL, Labels.WRITE_ARTICLE]
+                intent.label
+                in [
+                    Labels.SEARCH_BILL,
+                    Labels.WRITE_ARTICLE,
+                    Labels.BILL_SUMMARY,
+                    Labels.BILL_COMPARISON,
+                    Labels.BILL_BY_LEGISLATOR,
+                    Labels.BILL_BY_PARTY,
+                ]
                 for intent in self.intents
             ]
         )

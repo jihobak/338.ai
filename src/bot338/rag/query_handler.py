@@ -403,6 +403,8 @@ If no conversation history exists, the original query should be directly copied 
         all_queries = (
             vector_search_queries + [standalone_query] + keywords + sub_queries
         )
+        if all_queries:
+            all_queries = all_queries[:10]  # 최대 10개
 
         if self.content_search:
             requires_content_search = self.content_search.requires_content_search

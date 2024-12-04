@@ -68,14 +68,14 @@ class Labels(str, enum.Enum):
     BILL_BY_PARTY = "bill_by_party"  # 정담 중심 의안 검색
     OTHER = "other"
 
-    Labels.BILL_SUMMARY.value: "쿼리가 특정 법안의 주요 내용을 요약하는 요청과 관련되어 있습니다 ex) '전기차 충전소 설치 관련 법안 내용을 요약해줘'",
-    Labels.BILL_COMPARISON.value: "쿼리가 두 개 이상의 법안을 비교하고 차이점과 공통점을 설명하는 요청과 관련되어 있습니다. ex) '전기차 관련 법안 두 개의 차이점을 비교해줘'",
-    Labels.BILL_BY_LEGISLATOR.value: "쿼리가 특정 의원(들)이 발의한 의안을 찾아 분석하는 것과 관련이 있습니다",
-    Labels.BILL_BY_PARTY.value: "쿼리가 특정 정당(들)에서 발의된 의안을 찾아 분석하는 것과 관련이 있습니다.",
 
 INTENT_DESCRIPTIONS = {
     Labels.SEARCH_BILL.value: "쿼리가 국회에서 발의된 의안 검색과 관련이 있다. ex) '국회에서 발의된 전기차 안전관련 의안을 찾아줘'",
     Labels.WRITE_ARTICLE.value: "쿼리가 발의안에 대한 기사 작성 요청과 관련이 있다.",
+    Labels.BILL_SUMMARY.value: "쿼리가 특정 법안의 주요 내용을 요약하는 요청과 관련되어 있습니다 ex) '전기차 충전소 설치 관련 법안 내용을 요약해줘'",
+    Labels.BILL_COMPARISON.value: "쿼리가 두 개 이상의 법안을 비교하고 차이점과 공통점을 설명하는 요청과 관련되어 있습니다. ex) '전기차 관련 법안 두 개의 차이점을 비교해줘'",
+    Labels.BILL_BY_LEGISLATOR.value: "쿼리가 특정 의원(들)이 발의한 의안을 찾아 분석하는 것과 관련이 있습니다",
+    Labels.BILL_BY_PARTY.value: "쿼리가 특정 정당(들)에서 발의된 의안을 찾아 분석하는 것과 관련이 있습니다.",
     Labels.UNRELATED.value: "쿼리가 국회의 발의안 또는 발의안 관련 기사 작성과 관련이 없다.",
     Labels.NEEDS_MORE_INFO.value: "질문에 답변하기 전에 사용자로부터 더 많은 정보가 필요합니다.",
     Labels.OPINION_REQUEST.value: "질문이 의견을 묻고 있습니다.",
@@ -86,7 +86,7 @@ INTENT_DESCRIPTIONS = {
 QUERY_INTENTS = {
     Labels.SEARCH_BILL.value: """쿼리가 국회에서 발의된 법안을 검색하는 것과 관련되어 있습니다. 사용자가 요청한 법안에 대한 세부 정보를 검색하고, 검색된 의안들의 핵심 내용을 설명해서 검색결과를 제공해준다.
 
-    [**주의 사항**]
+    [**Important Considerations**]
       - 검색된 의안의 내용이 사용자의 쿼리(질문, 요청)과 관련이 없을 경우, 검색된 의안이 없음을 사용자에게 친절히 알려주고, 자연스럽게 다시 질문해볼 것을 요청합니다.
     """,
     Labels.WRITE_ARTICLE.value: """쿼리가 발의안에 관한 기사 작성 요청과 관련되어 있습니다. 사용자의 요구사항과 기사 작성 가이드라인를 고려해서 훌륭한 기사를 작성합니다.""",
@@ -211,7 +211,7 @@ class ContentSearch(BaseModel):
 
 
 class QueryAnalysis(BaseModel):
-    """사용자 쿼리 분석"""
+    """Query Analysis of User's query"""
 
     content_search: Optional[ContentSearch] = Field(
         default_factory=lambda: ContentSearch(
@@ -666,14 +666,15 @@ class SearchMetaData(BaseModel):
 
 
 class EnhancedQuery(BaseModel):
-    """향상된 쿼리와 쿼리의 메타 데이터 분석"""
+    """Advanced query analysis and metadata enrichment."""
 
     query_analysis: QueryAnalysis = Field(
         default_factory=lambda: QueryAnalysis(
             intents=[
                 Intent(label="other", reasoning="사용자의 의도를 파악할 수 없습니다")
             ]
-        )
+        ),
+        description="Provides a detailed analysis of the user's query",
     )
     search_metadata: Optional[SearchMetaData] = Field(
         default_factory=lambda: SearchMetaData(),
@@ -711,8 +712,9 @@ ENHANCER_SYSTEM_PROMPT = """\
 당신의 목표는 사용자 질문을 개선하고 제공된 도구를 사용하여 그것을 표현하는 것입니다. 모든 답변은 반드시 **한국어**로 합니다.
 
 
-[# 주의 사항]
-    - 대화 기록이 존재하고, 사용자의 쿼리가 대화 기록속 검색된 의안 결과를 가지고 기사를 작성을 요구하는 경우 도구(tool) 사용시, 원래 의안 검색에 사용되었던 맥락에 충분히 고려해야한다."
+[# Important Considerations**]
+    - 대화 기록이 존재하고, 사용자의 쿼리가 대화 기록속 검색된 의안 결과를 가지고 기사를 작성을 요구하는 경우 도구(tool) 사용시, 원래 의안 검색에 사용되었던 맥락을 충분히 고려해야한다.
+    - 사용자 요청을 처리하기 위해서 대화 기록에서 사용해야할 특정 의안들을 찾을 경우 의안번호(billcode)을 사용 하면된다.
     - 현재 국회는 22대 국회이며, 사용자가 질문하는 시점은 {today} 입니다.
     - 22대 국회의 여당은 '국민의힘' 이고 야당은 '더불어민주당(더불어 민주당)', '개혁신당', '진보당', '기본소득당', '조국혁신당' 입니다. 물론 무소속인 국회의원도 있습니다.
     - '최근' 이라함은, 최근 3개월을 의미한다.

@@ -414,6 +414,7 @@ If no conversation history exists, the original query should be directly copied 
             "question": question,
             "standalone_query": standalone_query,
             "intents": intents_descriptions,
+            "INTENT": [intent.label.value for intent in self.intents] if self.intents else [],
             "keywords": keywords,
             "sub_queries": sub_queries,
             "vector_search_queries": vector_search_queries,
